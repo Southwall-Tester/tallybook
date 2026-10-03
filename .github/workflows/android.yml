@@ -42,6 +42,9 @@ jobs:
           test -x "$sdk_manager"
           "$sdk_manager" "platforms;android-35" "build-tools;35.0.0"
 
+      - name: Check read-only WeChat query tool with fictional fixtures
+        run: python3 scripts/test_query_wechat_bills.py
+
       - name: Run tests, build APK and lint
         run: bash ./gradlew :core:test :app:assembleDebug :app:lintDebug --console=plain --no-daemon
 

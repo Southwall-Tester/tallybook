@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="wechat_capture_label">小账本 · 微信账单读取</string>
-    <string name="wechat_capture_summary">你打开微信账单、手动翻页，小账本在本机识别可见账单。</string>
-    <string name="wechat_capture_description">用于个人记账，不是面向残障人士的辅助工具。你还需在小账本内点击开始读取并单独同意，本次授权最多30分钟。授权期间，仅在微信位于前台时读取微信窗口截图并在本机识别文字；识别出的账单保存到本机待核对。截图与其他识别文字只在内存处理，不保存、不上传。不代你点击、滑动或支付。离开微信暂停读取；可在小账本随时停止，也可在此关闭服务。需要Android 14或以上。</string>
-</resources>
