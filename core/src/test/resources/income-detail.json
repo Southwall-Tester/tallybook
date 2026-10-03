@@ -1,0 +1,13 @@
+{
+  "_fixture_notice": "全部为虚构演示数据，不来自任何真实账户",
+  "ret_code": 0,
+  "ret_msg": "ok",
+  "header": {"nickname": "演示·二手物品买家", "fee": "+120.00"},
+  "preview": [
+    {"label": {"name": "当前状态"}, "value": [{"name": "收款成功"}]},
+    {"label": {"name": "商品说明"}, "value": [{"name": "虚构演示：闲置台灯售出"}]},
+    {"label": {"name": "收款方式"}, "value": [{"name": "零钱（演示）"}]},
+    {"label": {"name": "交易时间"}, "value": [{"name": "2026-10-03 14:00:00"}]},
+    {"label": {"name": "交易单号"}, "value": [{"name": "DEMO-WECHAT-20261003-003"}]}
+  ]
+}

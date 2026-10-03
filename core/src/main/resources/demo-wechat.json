@@ -1,0 +1,13 @@
+{
+  "_fixture_notice": "全部为虚构演示数据，不来自任何真实账户",
+  "ret_code": 0,
+  "ret_msg": "ok",
+  "header": {"nickname": "演示·晨光早餐铺", "fee": "-12.80"},
+  "preview": [
+    {"label": {"name": "当前状态"}, "value": [{"name": "支付成功"}]},
+    {"label": {"name": "商品说明"}, "value": [{"name": "虚构演示：豆浆与三明治"}]},
+    {"label": {"name": "支付方式"}, "value": [{"name": "零钱（演示）"}]},
+    {"label": {"name": "支付时间"}, "value": [{"name": "2026-10-03 08:20:00"}]},
+    {"label": {"name": "交易单号"}, "value": [{"name": "DEMO-WECHAT-20261003-001"}]}
+  ]
+}

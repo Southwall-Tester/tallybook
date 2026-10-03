@@ -1,0 +1,19 @@
+.tools/
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+captures/
+*.keystore
+*.jks
+artifacts/*.apk
+artifacts/*.png
+__pycache__/
+*.pyc
+# User-supplied discussion screenshots stay local.
+/*.png
+artifacts/*.csv
+artifacts/*.json
+artifacts/*.txt
+artifacts/*.sha256

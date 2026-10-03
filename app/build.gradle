@@ -1,0 +1,27 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'dev.tallybook.app'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'dev.tallybook.app'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0-prototype'
+        testInstrumentationRunner 'dev.tallybook.app.PrototypeInstrumentation'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildTypes { release { minifyEnabled false } }
+    sourceSets { main.assets.srcDirs += '../core/src/main/resources' }
+    lint { abortOnError true }
+}
+
+dependencies {
+    implementation(project(':core')) { exclude group: 'org.json', module: 'json' }
+    compileOnly 'de.robv.android.xposed:api:82'
+    testImplementation 'junit:junit:4.13.2'
+}
