@@ -8,7 +8,7 @@
 - SHA-256：`c0c3ec79933383acfa71b60012cb1982bbf66d18e41f99ed0dffc069372ef6ba`。
 - APK 签名验证通过；Android 8.0 / API 26 起可安装，compile/target SDK 35；最终 APK 权限清单为空。
 - 新增钱钱练习、私有 USB 查询请求与待核对入账。历史 APK 均保留，未恢复屏幕读取。
-- vivo S30 本次覆盖安装返回 `INSTALL_FAILED_ABORTED: User rejected permissions`，因此 **0.4.0 尚未成功安装到真机**。正在等待用户解锁并确认安装；手机此前成功安装的是 0.3.1。没有卸载或清空手机数据。
+- vivo S30 首次覆盖安装被系统取消；用户要求重新发起后，`adb install -r` 返回 `Success`。随后冷启动返回 `Status: ok`，实机包信息确认为 versionCode 5 / `0.4.0-prototype`。未卸载或清空手机数据。该结果证明安装与启动成功，不代表新增微信查询到入库的真机闭环已通过。
 
 ## 已完成检查
 
