@@ -6,7 +6,7 @@
 
 - 本地 APK：`artifacts/tallybook-0.2.0-debug.apk`，129,865 字节，调试签名；生成文件不纳入 Git。
 - SHA-256：`2af057ab5fb5b770aa386a39b1ec777a790e6df2bf491050a20f4beb3f119280`。
-- Android 8.0（API 26）起可安装；编译和目标 SDK 为 35。实际运行验证使用 Android 15 / API 35 模拟器，尚未覆盖所有安卓版本或厂商系统。
+- Android 8.0（API 26）起可安装；编译和目标 SDK 为 35。完整运行验证使用 Android 15 / API 35 模拟器；另在 vivo S30、Android 16 / API 36 上完成首次安装和启动检查，尚未覆盖所有安卓版本或厂商系统。
 - `apksigner verify --verbose` 成功：APK v2 签名有效。
 
 ## 已完成的检查
@@ -30,7 +30,9 @@ CSV 样例全部为虚构数据。手动记录导出金额为 -25.50 元；演�
 
 电脑预览：`scripts/preview.ps1` 已实际创建并启动可见的 `tallybook_preview:5556` 窗口、安装 APK 并打开 Activity。测试设备为另一个 AVD，预览数据不会被测试清空。
 
-USB 开发入口：`scripts/run-device.ps1` 通过 Windows PowerShell 5.1 语法解析；实际检查了设备列表，以及未选择设备、目标不存在、选择模拟器时在构建和安装前拒绝运行的分支。构建与 lint 再次成功，应用源码未变，APK SHA-256 保持不变。真机安装、覆盖更新和 `-Watch` 连续运行尚未实测；检查时 ADB 未发现可用设备。设备序列号仅本地保存，不进入 Git。
+USB 开发入口：`scripts/run-device.ps1` 通过 Windows PowerShell 5.1 语法解析；实际检查了设备列表，以及未选择设备、目标不存在、选择模拟器时在构建和安装前拒绝运行的分支。构建与 lint 再次成功，应用源码未变，APK SHA-256 保持不变。设备序列号仅本地保存，不进入 Git。
+
+真机首次部署：在 vivo S30（V2464A）、Android 16 / API 36 上确认型号并固定目标，执行 `-Check -Remember` 后运行真机脚本。增量构建成功，安装返回 `Success`，启动返回 `Status: ok`；本应用包信息为 `versionCode=2`、`versionName=0.2.0-prototype`，随后确认应用进程仍在运行、前台 Activity 为 `dev.tallybook.app/.MainActivity`。用户确认已进入应用。未操作副屏平板，也未在真机上运行清空账本的测试。覆盖更新、`-Watch` 连续运行、真机账本读写及微信采集仍未实测。
 
 证据文件（`artifacts/` 与 `build/` 为本地产物，未上传 Git；CI 报告从对应 Actions 运行下载）：
 
@@ -44,7 +46,7 @@ USB 开发入口：`scripts/run-device.ps1` 通过 Windows PowerShell 5.1 语法
 
 ## 尚未验证或实现
 
-- 尚未通过 ADB 连接并部署到用户手机，也没有登录微信、读取真实账单或进行真实支付。
+- 真机已完成首次安装和启动；尚未在真机验证完整账本功能，没有登录微信、读取真实账单或进行真实支付。
 - Hook 基于开源项目公开的 `evaluateJavascript` 切入点和**单笔账单详情**格式。模拟器测试使用虚构输入，不能证明当前微信版本兼容。
 - 采集需要可运行 Xposed 模块的环境。普通未 Root 手机只安装 APK，可体验账本、导入支持的 JSON 和导出 CSV，不能因此获得读取微信进程的能力。
 - 尚无独立微信后台查询 API、完整账单列表分页、每日定时拉取、支付宝或银行采集。
