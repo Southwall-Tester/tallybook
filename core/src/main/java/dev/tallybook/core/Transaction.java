@@ -15,6 +15,11 @@ public final class Transaction {
     public static final String PROVIDER = "wechat";
     public static final String MANUAL_PROVIDER = "manual";
     public static final String MANUAL_STATUS = "手动记录";
+    public static final String SCREEN_PROVIDER = "wechat_screen";
+    public static final String SCREEN_STATUS = "屏幕识别";
+    public static final String SCREEN_CONFIRMED_STATUS = "已核对";
+    public static final String SCREEN_DESCRIPTION = "微信账单列表屏幕识别（分钟精度）";
+    public static final String SCREEN_REVIEW_REASON = "屏幕 OCR 可能识别错误且缺少交易单号；同一分钟同标题同金额可能合并，请核对后入账";
     public static final int SCHEMA_VERSION = 1;
     public static final long MIN_OCCURRED_AT = 946684800000L; // 2000-01-01 UTC
     public static final long MAX_OCCURRED_AT = 4102444800000L; // 2100-01-01 UTC, exclusive
@@ -53,14 +58,68 @@ public final class Transaction {
                 signedAmount, occurredAt, false, "");
     }
 
+    /**
+     * A screen-derived candidate, never automatically confirmed. The screen only
+     * supplies minute precision, so equal title/amount/minute rows share an ID.
+     * Genuine identical payments in one minute cannot be distinguished here.
+     */
+    public static Transaction screen(String title, long amountMinor, long occurredAt) {
+        if (occurredAt < MIN_OCCURRED_AT || occurredAt >= MAX_OCCURRED_AT) {
+            throw new IllegalArgumentException("Invalid transaction time");
+        }
+        return new Transaction(SCREEN_PROVIDER, "", normalizeScreenTitle(title), SCREEN_STATUS, "", SCREEN_DESCRIPTION,
+                amountMinor, occurredAt - occurredAt % 60_000L, true, SCREEN_REVIEW_REASON);
+    }
+
+    /**
+     * Canonicalizes new OCR titles only: horizontal spaces between two Han characters
+     * are OCR layout noise. English words, digits, punctuation and mixed-script boundaries
+     * keep their spaces. Existing serialized records retain their original title and ID.
+     */
+    public static String normalizeScreenTitle(String title) {
+        checkedText(title, 1024, false, "counterparty");
+        StringBuilder normalized = new StringBuilder(title.length());
+        for (int index = 0; index < title.length();) {
+            int point = title.codePointAt(index);
+            if (Character.getType(point) != Character.SPACE_SEPARATOR) {
+                normalized.appendCodePoint(point);
+                index += Character.charCount(point);
+                continue;
+            }
+            int end = index + Character.charCount(point);
+            while (end < title.length() && Character.getType(title.codePointAt(end)) == Character.SPACE_SEPARATOR) {
+                end += Character.charCount(title.codePointAt(end));
+            }
+            int before = normalized.length() == 0 ? -1 : normalized.codePointBefore(normalized.length());
+            int after = end == title.length() ? -1 : title.codePointAt(end);
+            if (!isHan(before) || !isHan(after)) normalized.append(title, index, end);
+            index = end;
+        }
+        return normalized.toString();
+    }
+
+    private static boolean isHan(int point) {
+        return point >= 0 && Character.UnicodeScript.of(point) == Character.UnicodeScript.HAN;
+    }
+
+    /** Explicit user confirmation of a screen candidate; its fingerprint remains unchanged. */
+    public Transaction confirmScreen() {
+        if (!SCREEN_PROVIDER.equals(provider)) {
+            throw new IllegalArgumentException("Only screen records can be confirmed here");
+        }
+        return new Transaction(SCREEN_PROVIDER, tradeId, counterparty, SCREEN_CONFIRMED_STATUS,
+                paymentMethod, description, amountMinor, occurredAt, false, "");
+    }
+
     private Transaction(String provider, String tradeId, String counterparty, String status,
                         String paymentMethod, String description, long amountMinor, long occurredAt,
                         boolean reviewRequired, String reviewReason) {
-        if (!PROVIDER.equals(provider) && !MANUAL_PROVIDER.equals(provider)) {
+        if (!PROVIDER.equals(provider) && !MANUAL_PROVIDER.equals(provider) && !SCREEN_PROVIDER.equals(provider)) {
             throw new IllegalArgumentException("Unsupported transaction provider");
         }
         this.provider = provider;
         boolean manual = MANUAL_PROVIDER.equals(provider);
+        boolean screen = SCREEN_PROVIDER.equals(provider);
         this.tradeId = checkedText(tradeId, 128, !manual, "tradeId");
         if (!this.tradeId.isEmpty() && !this.tradeId.matches("[A-Za-z0-9_-]{1,128}")) {
             throw new IllegalArgumentException("Invalid tradeId");
@@ -85,7 +144,14 @@ public final class Transaction {
         if (manual && (!MANUAL_STATUS.equals(this.status) || reviewRequired)) {
             throw new IllegalArgumentException("Invalid manual transaction status");
         }
-        if (!manual && !reviewRequired && (this.tradeId.isEmpty()
+        if (screen && (!this.tradeId.isEmpty() || !this.paymentMethod.isEmpty()
+                || !SCREEN_DESCRIPTION.equals(this.description) || occurredAt % 60_000L != 0
+                || (reviewRequired && (!SCREEN_STATUS.equals(this.status)
+                    || !SCREEN_REVIEW_REASON.equals(this.reviewReason)))
+                || (!reviewRequired && !SCREEN_CONFIRMED_STATUS.equals(this.status)))) {
+            throw new IllegalArgumentException("Invalid screen transaction fields or status");
+        }
+        if (!manual && !screen && !reviewRequired && (this.tradeId.isEmpty()
                 || !isConfirmedStatus(this.status) || isTransferLike(this.counterparty, this.description))) {
             throw new IllegalArgumentException("Transaction requires review");
         }

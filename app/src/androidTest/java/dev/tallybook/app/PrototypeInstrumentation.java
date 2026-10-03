@@ -17,18 +17,45 @@ import java.time.LocalDate;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import com.google.android.gms.tasks.Tasks;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
+import dev.tallybook.app.capture.VisibleCaptureSettings;
+import dev.tallybook.app.capture.OcrLines;
+import dev.tallybook.core.WechatScreenParser;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /** Integration tests for a disposable emulator only: deliberately resets its test ledger. */
 public final class PrototypeInstrumentation extends Instrumentation {
     private final StringBuilder report = new StringBuilder();
     private int checks;
-    @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
+    private boolean ocrFixture;
+    @Override public void onCreate(Bundle args) {
+        super.onCreate(args);
+        ocrFixture = args != null && "true".equals(args.getString("ocrFixture"));
+        start();
+    }
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
             if (!(Build.FINGERPRINT.startsWith("generic") || Build.MODEL.contains("sdk_gphone")
                     || Build.MODEL.contains("Android SDK"))) {
                 throw new IllegalStateException("These tests reset a disposable emulator; physical devices are refused.");
+            }
+            if (ocrFixture) {
+                result.putString("stream", OcrFixtureDiagnostics.run(this));
+                finish(Activity.RESULT_OK, result);
+                return;
             }
             runChecks();
             result.putString("stream", report + "\nTALLYBOOK_SMOKE_OK checks=" + checks + "\n");
@@ -99,6 +126,54 @@ public final class PrototypeInstrumentation extends Instrumentation {
         Bundle manualRejected = context.getContentResolver().call(bridge, "record", null, manualPayload);
         check(manualRejected != null && !manualRejected.getBoolean("accepted") && store.list("wechat").size() == 1,
             "WeChat capture bridge rejects manual-provider payloads");
+        Transaction screen = Transaction.screen("虚构屏幕午餐", -1280L, tx.occurredAt);
+        check(Transaction.fromJson(screen.toJson()).id.equals(screen.id)
+            && screen.reviewRequired && screen.occurredAt % 60000 == 0,
+            "Screen candidate roundtrips on Android with minute precision and mandatory review");
+        int demoCount = store.list("demo").size();
+        check(store.insertScreenIfAbsent(screen) && !store.insertScreenIfAbsent(screen)
+            && store.list("wechat").size() == 2 && store.list("demo").size() == demoCount,
+            "Screen insertion is deduplicated and cannot add records to the demo ledger");
+        // Seed a fictional shadow row only to exercise source isolation of confirmation/deletion.
+        android.content.ContentValues shadow = new android.content.ContentValues();
+        shadow.put("source", LedgerStore.DEMO);
+        shadow.put("transaction_id", screen.id);
+        shadow.put("payload", screen.toJson());
+        shadow.put("occurred_at", screen.occurredAt);
+        shadow.put("updated_at", 0);
+        store.getWritableDatabase().insertOrThrow("transactions", null, shadow);
+        check(store.confirmScreen(screen.id) && !store.confirmScreen(screen.id),
+            "Screen confirmation updates once and keeps the same record ID");
+        check(!store.insertScreenIfAbsent(screen)
+            && !find(store.list("wechat"), screen.id).reviewRequired
+            && find(store.list("demo"), screen.id).reviewRequired,
+            "Repeated OCR cannot overwrite confirmation and confirmation cannot change a demo shadow");
+        boolean wrongProviderDenied = false;
+        try { store.insertScreenIfAbsent(tx); }
+        catch (IllegalArgumentException expected) { wrongProviderDenied = true; }
+        check(wrongProviderDenied && !store.confirmScreen(tx.id) && !store.deleteScreen(tx.id)
+            && !store.confirmScreen(manual.id) && !store.deleteScreen(manual.id),
+            "Screen storage operations reject WeChat and manual providers");
+        boolean confirmedInsertDenied = false;
+        try { store.insertScreenIfAbsent(screen.confirmScreen()); }
+        catch (IllegalArgumentException expected) { confirmedInsertDenied = true; }
+        boolean genericInsertDenied = false;
+        try { store.insert(screen, "wechat"); }
+        catch (IllegalArgumentException expected) { genericInsertDenied = true; }
+        check(confirmedInsertDenied && genericInsertDenied,
+            "Screen records cannot bypass pending insertion or use generic overwrite insertion");
+        Bundle screenPayload = new Bundle();
+        screenPayload.putString("transaction", screen.toJson());
+        Bundle screenRejected = context.getContentResolver().call(bridge, "record", null, screenPayload);
+        check(screenRejected != null && !screenRejected.getBoolean("accepted"),
+            "Exported WeChat hook bridge rejects the separate screen provider");
+        check(!store.deleteManual(screen.id, "wechat") && store.deleteScreen(screen.id)
+            && !store.deleteScreen(screen.id) && store.list("wechat").size() == 1
+            && find(store.list("demo"), screen.id).reviewRequired,
+            "Screen deletion is provider-scoped and leaves the demo shadow and imported WeChat record intact");
+        check(!store.confirmScreen(null) && !store.deleteScreen("unknown")
+            && !store.confirmScreen("wechat_screen:" + "0".repeat(64)),
+            "Missing and malformed screen IDs do not modify storage");
         boolean denied = false;
         try { context.getContentResolver().query(bridge, null, null, null, null); }
         catch (SecurityException expected) { denied = true; }
@@ -109,6 +184,15 @@ public final class PrototypeInstrumentation extends Instrumentation {
             if ("android.permission.INTERNET".equals(permission)) hasInternet = true;
         }
         check(!hasInternet, "APK requests no INTERNET permission");
+        VisibleCaptureSettings.disable(context);
+        check(!VisibleCaptureSettings.isEnabled(context), "Screen reading is off before explicit consent");
+        VisibleCaptureSettings.enableFor30Minutes(context);
+        check(VisibleCaptureSettings.isEnabled(context)
+                && VisibleCaptureSettings.enabledUntil(context) <= System.currentTimeMillis() + 1800000L,
+                "Screen consent is enabled with a bounded window");
+        VisibleCaptureSettings.disable(context);
+        check(!VisibleCaptureSettings.isEnabled(context), "Stopping screen reading revokes the consent window");
+        checkBundledOcr();
         PlanStore realPlans = new PlanStore(context, "wechat");
         PlanStore demoPlans = new PlanStore(context, "demo");
         realPlans.clear();
@@ -136,10 +220,48 @@ public final class PrototypeInstrumentation extends Instrumentation {
         store.close();
         context.getSharedPreferences("capture_settings", Context.MODE_PRIVATE).edit().clear().commit();
         context.getSharedPreferences("capture_diagnostics", Context.MODE_PRIVATE).edit().clear().commit();
+        context.getSharedPreferences("visible_capture_settings", Context.MODE_PRIVATE).edit().clear().commit();
         Intent launch = new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         Activity activity = startActivitySync(launch);
         waitForIdleSync();
         check(activity != null && !activity.isFinishing(), "Main activity launches after integration checks");
+    }
+
+    /** Synthetic pixels only: exercises bundled Chinese OCR on the real Android runtime, offline. */
+    private void checkBundledOcr() throws Exception {
+        Bitmap bitmap = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.drawColor(Color.WHITE);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.BLACK);
+        paint.setTextSize(48);
+        canvas.drawText("账单", 480, 170, paint);
+        canvas.drawText("全部账单", 50, 310, paint);
+        canvas.drawText("查找交易", 380, 310, paint);
+        canvas.drawText("2026年10月", 40, 470, paint);
+        canvas.drawText("虚构早餐店", 210, 640, paint);
+        canvas.drawText("-18.50", 865, 640, paint);
+        canvas.drawText("虚构退款记录", 210, 850, paint);
+        canvas.drawText("+35.60", 865, 850, paint);
+        paint.setTextSize(38);
+        canvas.drawText("10月2日 10:14", 210, 710, paint);
+        canvas.drawText("10月1日 09:08", 210, 920, paint);
+        TextRecognizer recognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+        try {
+            Text recognized = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)), 45, TimeUnit.SECONDS);
+            List<WechatScreenParser.TextLine> lines = OcrLines.fromText(recognized, bitmap.getWidth());
+            WechatScreenParser.Result parsed = WechatScreenParser.parse(lines, bitmap.getWidth(), bitmap.getHeight());
+            check(parsed.transactions.size() == 2, "Bundled Chinese OCR recognizes two synthetic bill rows without INTERNET permission");
+            check(parsed.transactions.stream().allMatch(row -> row.reviewRequired
+                    && Transaction.SCREEN_PROVIDER.equals(row.provider)), "OCR rows remain pending screen records");
+        } finally {
+            recognizer.close();
+            bitmap.recycle();
+        }
+    }
+    private static Transaction find(java.util.List<Transaction> records, String id) {
+        for (Transaction transaction : records) if (transaction.id.equals(id)) return transaction;
+        throw new AssertionError("Synthetic test transaction missing");
     }
     private void check(boolean condition, String label) {
         if (!condition) throw new AssertionError(label);

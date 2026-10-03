@@ -66,6 +66,7 @@ public final class MainActivity extends Activity {
     private static final int AMBER = Color.rgb(139, 100, 36);
     private static final int REQUEST_IMPORT = 101;
     private static final int REQUEST_EXPORT = 102;
+    private static final int REQUEST_SCREEN_CAPTURE = 103;
     private static final int MAX_JSON_BYTES = 256 * 1024;
     private static final Uri EVENTS = Uri.parse("content://dev.tallybook.app.capture/events");
 
@@ -384,9 +385,9 @@ public final class MainActivity extends Activity {
             empty.addView(example);
             if (!isDemo()) {
                 addSpace(empty, 9);
-                Button importing = button("导入 JSON", false);
+                Button importing = button("读取微信账单", false);
                 importing.setEnabled(!busy);
-                importing.setOnClickListener(v -> startImport());
+                importing.setOnClickListener(v -> startScreenCapture());
                 empty.addView(importing);
             }
             content.addView(empty);
@@ -405,7 +406,7 @@ public final class MainActivity extends Activity {
             }
             addSpace(content, 15);
             Button next = button(isDemo() ? "回到真实账本" : "继续采集 / 导入", false);
-            next.setOnClickListener(v -> { if (isDemo()) switchLedger(LedgerStore.WECHAT); else { page = 4; render(); } });
+            next.setOnClickListener(v -> { if (isDemo()) switchLedger(LedgerStore.WECHAT); else startScreenCapture(); });
             content.addView(next);
         }
     }
@@ -901,7 +902,9 @@ public final class MainActivity extends Activity {
                 + "交易单号：" + valueOr(transaction.tradeId, "未提供") + "\n\n"
                 + (transaction.reviewRequired ? "待核对：" + valueOr(transaction.reviewReason, "信息不足，暂不计入汇总。")
                 : "该记录计入收支汇总。") + "\n\n"
-                + (isDemo() ? "这是纯虚构演示记录。" : "manual".equals(transaction.provider)
+                + (isDemo() ? "这是纯虚构演示记录。" : Transaction.SCREEN_PROVIDER.equals(transaction.provider)
+                ? "来源：微信账单列表屏幕识别，时间精确到分钟、名称可能截断，没有交易单号。按名称、金额、分钟去重，可能合并相似交易；请检查是否已经手记或从其他来源导入。"
+                : "manual".equals(transaction.provider)
                 ? "来源：你手动填写的记录。可以删除误记后重新填写。" : "来源：本机接收或手动导入的微信详情数据。请与微信原始账单核对。") ;
         TextView detail = label(body, 14, INK, false);
         detail.setTextIsSelectable(true);
@@ -934,7 +937,45 @@ public final class MainActivity extends Activity {
                         });
                     }).show());
         }
+        if (Transaction.SCREEN_PROVIDER.equals(transaction.provider) && !isDemo()) {
+            if (transaction.reviewRequired) {
+                builder.setPositiveButton("核对后计入收支", (dialog, which) ->
+                        new AlertDialog.Builder(this).setTitle("确认这笔识别记录？")
+                                .setMessage("请对照微信核对名称、日期、金额与收支方向，并确认没有重复记账。转到自己的账户、充值、提现和理财转入不应作为新增收入或消费。\n\n确认后，这笔记录才会计入生活费与收支汇总。")
+                                .setNegativeButton("先不确认", null)
+                                .setPositiveButton("确认计入", (confirm, action) -> updateScreenRecord(transaction, false)).show());
+            }
+            builder.setNeutralButton("删除识别记录", (dialog, which) ->
+                    new AlertDialog.Builder(this).setTitle("删除这笔识别记录？")
+                            .setMessage("仅删除小账本中的这笔记录，不影响微信账单。读取开启时，再次识别同一行可能重新收集，请先停止读取。")
+                            .setNegativeButton("取消", null)
+                            .setPositiveButton("删除", (confirm, action) -> updateScreenRecord(transaction, true)).show());
+        }
         builder.show();
+    }
+
+    private void updateScreenRecord(Transaction transaction, boolean delete) {
+        if (busy || isDemo()) return;
+        busy = true;
+        render();
+        io.execute(() -> {
+            boolean changed;
+            try (LedgerStore store = new LedgerStore(this)) {
+                changed = delete ? store.deleteScreen(transaction.id) : store.confirmScreen(transaction.id);
+            } catch (RuntimeException error) { changed = false; }
+            if (changed) getContentResolver().notifyChange(EVENTS, null);
+            final boolean success = changed;
+            main.post(() -> {
+                if (!alive()) return;
+                busy = false;
+                loadRecords();
+                if (!success) message("记录未更新", "这笔记录可能已改变，请刷新后再试。");
+            });
+        });
+    }
+
+    private void startScreenCapture() {
+        if (!busy) startActivityForResult(new Intent(this, ScreenCaptureActivity.class), REQUEST_SCREEN_CAPTURE);
     }
 
     private void renderCapture() {
@@ -1078,6 +1119,12 @@ public final class MainActivity extends Activity {
         content.addView(current);
         addSpace(content, 18);
 
+        Button screenCapture = button("读取微信账单 · 无需 Root", true);
+        screenCapture.setOnClickListener(v -> startScreenCapture());
+        content.addView(screenCapture);
+        addSpace(content, 8);
+        content.addView(label("开启后切到微信账单列表，缓慢翻动即可收集；屏幕识别结果需核对后计入收支。", 12, MUTED, false));
+        addSpace(content, 14);
         Button capture = button("微信采集 · 实验功能", false);
         capture.setOnClickListener(v -> { page = 4; render(); });
         content.addView(capture);
@@ -1118,7 +1165,7 @@ public final class MainActivity extends Activity {
         data.addView(clear);
         content.addView(data);
         addSpace(content, 17);
-        content.addView(label("Tallybook · 生活费与存钱计划 0.2\n采集实现参考 AutoAccounting 的微信查看页 Hook 思路。", 11, MUTED, false));
+        content.addView(label("Tallybook · 生活费与存钱计划 0.3\n屏幕读取采用本机文字识别；原微信 Hook 实验单独保留。", 11, MUTED, false));
     }
 
     private void switchLedger(String nextSource) {
@@ -1203,6 +1250,15 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_SCREEN_CAPTURE && resultCode == RESULT_OK) {
+            source = LedgerStore.WECHAT;
+            page = 1;
+            records.clear();
+            loading = true;
+            render();
+            loadRecords();
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
         if (requestCode == REQUEST_IMPORT) importUri(data.getData());
         if (requestCode == REQUEST_EXPORT) exportUri(data.getData(), pendingExportSource);
@@ -1277,7 +1333,8 @@ public final class MainActivity extends Activity {
                                 safeSpreadsheetText(transaction.status), safeSpreadsheetText(transaction.paymentMethod),
                                 safeSpreadsheetText(transaction.description), "'" + valueOr(transaction.tradeId, ""),
                                 transaction.reviewRequired ? "是" : "否", safeSpreadsheetText(transaction.reviewReason),
-                                "manual".equals(transaction.provider) ? "手动记账" : "微信详情",
+                                "manual".equals(transaction.provider) ? "手动记账"
+                                        : Transaction.SCREEN_PROVIDER.equals(transaction.provider) ? "微信屏幕识别" : "微信详情",
                                 "manual".equals(transaction.provider) ? safeSpreadsheetText(transaction.paymentMethod) : "");
                     }
                 }
