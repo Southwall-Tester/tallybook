@@ -59,6 +59,9 @@ public final class CaptureProvider extends ContentProvider {
                         break;
                     }
                     Transaction transaction = Transaction.fromJson(payload);
+                    if (!Transaction.PROVIDER.equals(transaction.provider)) {
+                        throw new IllegalArgumentException("Capture accepts WeChat records only");
+                    }
                     boolean inserted = store.insert(transaction, "wechat");
                     CaptureSettings.recordCapture(getContext(), inserted);
                     CaptureDiagnostics.record(getContext(), inserted ? "BILL_SAVED" : "BILL_UPDATED");

@@ -26,6 +26,8 @@ Windows 直接调用 wrapper 前，可运行 `. .\.tools\env.ps1`，再用 ` .\g
 
 ## 模拟器验证
 
+电脑交互预览直接双击根目录 `预览小账本.cmd`，或运行 `scripts/preview.ps1`。它打开可见的 `tallybook_preview`（端口 5556），保留试用数据。修改代码后使用 `scripts/preview.ps1 -Rebuild` 更新 APK。
+
 影响界面、存储或 Android 集成时，使用项目的可丢弃模拟器：
 
 ```powershell
@@ -37,6 +39,10 @@ adb -s emulator-5554 shell getprop sys.boot_completed
 ```
 
 测试脚本校验 AVD 名称 `tallybook_api35`，只在该模拟器重置测试账本，使用虚构数据检查真实/演示隔离、交易处理、采集权限以及界面和 CSV 导出。UI 检查还需要 Python 3。完成后可释放模拟器资源：
+
+若仅改动 Android 集成逻辑，可用 `scripts/test-emulator.ps1 -IntegrationOnly` 只运行集成和调用权限检查；完整界面流程仍使用默认命令。预览设备与测试设备相互隔离。
+
+保存与旋转的定向回归：先运行上述 `-IntegrationOnly` 重置测试数据，再运行 `python scripts/ui-refresh-smoke.py`。它在一次保存后切换屏幕方向，确认只出现一笔记录、已保存草稿不再弹出，并能删除该记录。
 
 ```powershell
 adb -s emulator-5554 emu avd name

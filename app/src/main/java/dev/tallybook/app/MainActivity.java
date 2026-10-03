@@ -19,12 +19,20 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ArrayAdapter;
+import android.widget.Spinner;
+import android.widget.ProgressBar;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.text.InputType;
 
 import dev.tallybook.core.Transaction;
 import dev.tallybook.core.WechatBillParser;
+import dev.tallybook.core.BudgetPlan;
+import dev.tallybook.core.BudgetEngine;
+import dev.tallybook.core.SavingsGoal;
 import dev.tallybook.app.capture.CaptureDiagnostics;
 
 import java.io.ByteArrayOutputStream;
@@ -38,6 +46,12 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.UUID;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.Instant;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -73,6 +87,12 @@ public final class MainActivity extends Activity {
     private TextView captureHook;
     private TextView captureDiagnostic;
     private Button captureToggle;
+    private String activeForm = "";
+    private Bundle restoredDraft;
+    private final Map<String, EditText> formInputs = new LinkedHashMap<>();
+    private Spinner formDirection;
+    private String activeEntryId = "";
+    private AlertDialog activeDialog;
 
     private final ContentObserver observer = new ContentObserver(main) {
         @Override public void onChange(boolean selfChange) {
@@ -92,7 +112,8 @@ public final class MainActivity extends Activity {
         if (state != null) {
             source = LedgerStore.DEMO.equals(state.getString("source")) ? LedgerStore.DEMO : LedgerStore.WECHAT;
             pendingExportSource = LedgerStore.DEMO.equals(state.getString("pending_export")) ? LedgerStore.DEMO : LedgerStore.WECHAT;
-            page = Math.max(0, Math.min(2, state.getInt("page", 0)));
+            page = Math.max(0, Math.min(4, state.getInt("page", 0)));
+            restoredDraft = state.getBundle("form_draft");
         }
         Window window = getWindow();
         window.setStatusBarColor(BG);
@@ -127,6 +148,16 @@ public final class MainActivity extends Activity {
         state.putString("source", source);
         state.putString("pending_export", pendingExportSource);
         state.putInt("page", page);
+        if (!activeForm.isEmpty()) {
+            Bundle draft = new Bundle();
+            draft.putString("form", activeForm);
+            for (Map.Entry<String, EditText> input : formInputs.entrySet()) {
+                draft.putString(input.getKey(), input.getValue().getText().toString());
+            }
+            if (formDirection != null) draft.putInt("direction", formDirection.getSelectedItemPosition());
+            draft.putString("entry_id", activeEntryId);
+            state.putBundle("form_draft", draft);
+        }
         super.onSaveInstanceState(state);
     }
 
@@ -155,9 +186,37 @@ public final class MainActivity extends Activity {
                 records.addAll(result);
                 loading = false;
                 loadError = finalError;
+                reconcileSavedManualDraft();
                 render();
+                restoreDraftForm();
             });
         });
+    }
+
+    private void reconcileSavedManualDraft() {
+        String entryId = "manual".equals(activeForm) ? activeEntryId : "";
+        if (entryId.isEmpty() && restoredDraft != null && "manual".equals(restoredDraft.getString("form"))) {
+            entryId = restoredDraft.getString("entry_id", "");
+        }
+        if (entryId.isEmpty()) return;
+        for (Transaction transaction : records) {
+            if ("manual".equals(transaction.provider) && entryId.equals(transaction.tradeId)) {
+                restoredDraft = null;
+                if (activeDialog != null && "manual".equals(activeForm)) activeDialog.dismiss();
+                return;
+            }
+        }
+    }
+
+    private void restoreDraftForm() {
+        if (restoredDraft == null || !activeForm.isEmpty()) return;
+        switch (restoredDraft.getString("form", "")) {
+            case "manual": showManualEntry(); break;
+            case "budget": showBudgetEditor(); break;
+            case "goal": showGoalEditor(); break;
+            case "trial": showSpendingTrial(); break;
+            default: restoredDraft = null;
+        }
     }
 
     private void render() {
@@ -186,11 +245,12 @@ public final class MainActivity extends Activity {
         heading.setPadding(dp(24), dp(18), dp(24), dp(12));
         LinearLayout titles = column();
         titles.addView(label("TALLYBOOK", 11, MUTED, true));
-        TextView title = label(page == 0 ? "我的账本" : page == 1 ? "微信采集" : "本机与数据", 29, INK, true);
+        String[] pageTitles = {"把生活安排好", "我的账本", "慢慢靠近目标", "本机与数据", "微信采集"};
+        TextView title = label(pageTitles[page], 27, INK, true);
         title.setPadding(0, dp(5), 0, 0);
         titles.addView(title);
         heading.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView badge = label("实验版", 11, GREEN, true);
+        TextView badge = label(isDemo() ? "演示" : "本机", 11, GREEN, true);
         badge.setPadding(dp(10), dp(6), dp(10), dp(6));
         badge.setBackground(round(PALE, 20));
         heading.addView(badge);
@@ -204,19 +264,27 @@ public final class MainActivity extends Activity {
         scroll.addView(content);
         shell.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        if (page == 0) renderLedger();
-        else if (page == 1) renderCapture();
-        else renderSettings();
+        if (page == 0) renderHome();
+        else if (page == 1) renderLedger();
+        else if (page == 2) renderGoals();
+        else if (page == 4) {
+            Button back = button("返回设置", false);
+            back.setOnClickListener(v -> { page = 3; render(); });
+            content.addView(back);
+            addSpace(content, 14);
+            renderCapture();
+        } else renderSettings();
 
         LinearLayout navigation = row();
         navigation.setPadding(dp(12), dp(8), dp(12), dp(8));
         navigation.setBackgroundColor(WHITE);
-        String[] tabs = {"账本", "采集", "设置"};
+        String[] tabs = {"首页", "账本", "目标", "设置"};
         for (int i = 0; i < tabs.length; i++) {
             final int selected = i;
             Button tab = button(tabs[i], false);
-            tab.setTextColor(page == i ? GREEN : MUTED);
-            tab.setBackground(round(page == i ? PALE : WHITE, 13));
+            boolean current = page == i || (page == 4 && i == 3);
+            tab.setTextColor(current ? GREEN : MUTED);
+            tab.setBackground(round(current ? PALE : WHITE, 13));
             tab.setOnClickListener(v -> { page = selected; render(); });
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1);
             params.setMargins(dp(4), 0, dp(4), 0);
@@ -225,7 +293,7 @@ public final class MainActivity extends Activity {
         shell.addView(navigation);
     }
 
-    private void renderLedger() {
+    private void addLedgerSwitcher() {
         LinearLayout switcher = row();
         switcher.setPadding(dp(4), dp(4), dp(4), dp(4));
         switcher.setBackground(round(PALE, 14));
@@ -239,6 +307,21 @@ public final class MainActivity extends Activity {
         switcher.addView(demo, new LinearLayout.LayoutParams(0, dp(42), 1));
         content.addView(switcher);
         addSpace(content, 15);
+    }
+
+    @Override public void onBackPressed() {
+        if (page == 4) { page = 3; render(); }
+        else if (page != 0) { page = 0; render(); }
+        else super.onBackPressed();
+    }
+
+    private void renderLedger() {
+        addLedgerSwitcher();
+        Button manual = button("记一笔", true);
+        manual.setEnabled(!busy && !loading && loadError.isEmpty());
+        manual.setOnClickListener(v -> showManualEntry());
+        content.addView(manual);
+        addSpace(content, 14);
 
         BigDecimal income = BigDecimal.ZERO;
         BigDecimal expense = BigDecimal.ZERO;
@@ -263,7 +346,7 @@ public final class MainActivity extends Activity {
         content.addView(summary);
         addSpace(content, 10);
         TextView note = label(isDemo() ? "虚构样例与真实账本分开保存，采集数据只进入真实账本。"
-                : "仅统计本机已导入记录，不代表微信账户的全部收支。", 12, MUTED, false);
+                : "统计本机手动记账与导入记录，不代表全部账户余额。", 12, MUTED, false);
         note.setLineSpacing(dp(3), 1);
         content.addView(note);
         if (review > 0) {
@@ -291,7 +374,7 @@ public final class MainActivity extends Activity {
             LinearLayout empty = card(WHITE);
             empty.addView(label(loading ? "正在读取本机账本…" : "从第一笔开始", 21, INK, true));
             addSpace(empty, 9);
-            TextView body = label(loading ? "稍等片刻。" : "查看页采集仍是实验功能。你可以先体验虚构账本，或导入一份支持的微信详情 JSON。", 14, MUTED, false);
+            TextView body = label(loading ? "稍等片刻。" : "点上方「记一笔」记录今天的消费，也可以先体验虚构账本。", 14, MUTED, false);
             body.setLineSpacing(dp(5), 1);
             empty.addView(body);
             addSpace(empty, 19);
@@ -322,10 +405,454 @@ public final class MainActivity extends Activity {
             }
             addSpace(content, 15);
             Button next = button(isDemo() ? "回到真实账本" : "继续采集 / 导入", false);
-            next.setOnClickListener(v -> { if (isDemo()) switchLedger(LedgerStore.WECHAT); else { page = 1; render(); } });
+            next.setOnClickListener(v -> { if (isDemo()) switchLedger(LedgerStore.WECHAT); else { page = 4; render(); } });
             content.addView(next);
         }
     }
+
+    private void renderHome() {
+        addLedgerSwitcher();
+        if (isDemo()) {
+            content.addView(label("以下计划与记录均为虚构，可自由试用。", 12, MUTED, false));
+            addSpace(content, 12);
+        }
+        BudgetPlan plan = readBudget();
+        BudgetEngine.Snapshot summary = null;
+        boolean summaryFailed = false;
+        if (plan != null && !loading && loadError.isEmpty()) {
+            try { summary = BudgetEngine.summarize(plan, records, LocalDate.now(), ZoneId.systemDefault()); }
+            catch (ArithmeticException error) { summaryFailed = true; }
+        }
+        LinearLayout overview = card(GREEN);
+        overview.addView(label("生活费 · 给今天留一点从容", 12, Color.rgb(205, 223, 202), false));
+        addSpace(overview, 15);
+        if (plan == null) {
+            overview.addView(label("先安排这个月", 30, WHITE, true));
+            addSpace(overview, 12);
+            overview.addView(label("留出固定开销和想存的钱，再看每天的花费。", 14, WHITE, false));
+        } else if (loading || !loadError.isEmpty()) {
+            overview.addView(label(loading ? "正在读取账本…" : "账本暂时无法读取", 24, WHITE, true));
+            addSpace(overview, 9);
+            overview.addView(label("完整读取后显示生活费估算。", 13, WHITE, false));
+        } else if (summaryFailed) {
+            overview.addView(label("暂时无法汇总", 25, WHITE, true));
+            addSpace(overview, 10);
+            overview.addView(label("记录的累计金额超出可计算范围，请核对账本金额。", 13, WHITE, false));
+        } else {
+            overview.addView(label("本期可用", 13, Color.rgb(219, 232, 216), false));
+            overview.addView(label("¥ " + money(summary.remainingMinor), 37, WHITE, true));
+            addSpace(overview, 18);
+            LinearLayout numbers = row();
+            numbers.addView(metric("每日参考", summary.active ? "¥ " + money(summary.dailyMinor) : "本期未进行"),
+                    new LinearLayout.LayoutParams(0, -2, 1));
+            numbers.addView(metric("本期剩余", summary.active ? summary.daysLeft + " 天（含今天）" : "请调整日期"),
+                    new LinearLayout.LayoutParams(0, -2, 1));
+            overview.addView(numbers);
+            addSpace(overview, 15);
+            overview.addView(label(plan.startDate + " 至 " + plan.endInclusive, 12, Color.rgb(205, 223, 202), false));
+            if (summary.remainingMinor < 0) {
+                addSpace(overview, 8);
+                overview.addView(label("本期已超出可用金额，先核对预留与记录。", 13, WHITE, false));
+            }
+            if (summary.pendingCount > 0) {
+                addSpace(overview, 8);
+                overview.addView(label(summary.pendingCount + " 笔待核对暂未计入。", 12, WHITE, false));
+            }
+        }
+        content.addView(overview);
+        addSpace(content, 14);
+        Button add = button("记一笔", true);
+        add.setEnabled(!busy && !loading && loadError.isEmpty());
+        add.setOnClickListener(v -> showManualEntry());
+        content.addView(add);
+        addSpace(content, 9);
+        LinearLayout actions = row();
+        Button budget = button(plan == null ? "设置生活费计划" : "调整生活费计划", false);
+        budget.setOnClickListener(v -> showBudgetEditor());
+        actions.addView(budget, new LinearLayout.LayoutParams(0, dp(49), 1));
+        View gap = new View(this);
+        actions.addView(gap, new LinearLayout.LayoutParams(dp(9), 1));
+        Button trial = button("消费试算", false);
+        trial.setEnabled(!loading && loadError.isEmpty());
+        trial.setOnClickListener(v -> showSpendingTrial());
+        actions.addView(trial, new LinearLayout.LayoutParams(0, dp(49), 1));
+        content.addView(actions);
+        addSpace(content, 11);
+        TextView note = label("估算基于本机记录。生活费预留和目标进度分别管理，均不会发起转账。", 12, MUTED, false);
+        note.setLineSpacing(dp(4), 1);
+        content.addView(note);
+        addSpace(content, 22);
+        renderWeeklyReview();
+    }
+
+    private void renderWeeklyReview() {
+        LinearLayout review = card(WHITE);
+        review.addView(label("最近 7 天 · 看见花费", 19, INK, true));
+        addSpace(review, 9);
+        LocalDate today = LocalDate.now();
+        LocalDate start = today.minusDays(6);
+        review.addView(label(start + " 至 " + today + " · 只统计已确认记录", 11, MUTED, false));
+        addSpace(review, 17);
+        if (loading || !loadError.isEmpty()) {
+            review.addView(label(loading ? "账本读取中…" : "账本暂时无法读取，暂不生成复盘。", 14, MUTED, false));
+        } else {
+            BigDecimal expense = BigDecimal.ZERO;
+            BigDecimal income = BigDecimal.ZERO;
+            int count = 0;
+            int pending = 0;
+            Map<String, BigDecimal> categories = new LinkedHashMap<>();
+            for (Transaction transaction : records) {
+                LocalDate date = Instant.ofEpochMilli(transaction.occurredAt).atZone(ZoneId.systemDefault()).toLocalDate();
+                if (date.isBefore(start) || date.isAfter(today)) continue;
+                if (transaction.reviewRequired) { pending++; continue; }
+                count++;
+                BigDecimal amount = BigDecimal.valueOf(transaction.amountMinor, 2);
+                if (amount.signum() > 0) income = income.add(amount);
+                else {
+                    expense = expense.subtract(amount);
+                    String category = "manual".equals(transaction.provider) ? transaction.paymentMethod : "导入支出（未分类）";
+                    categories.put(category, categories.getOrDefault(category, BigDecimal.ZERO).subtract(amount));
+                }
+            }
+            review.addView(label("支出 ¥ " + decimal(expense), 26, INK, true));
+            addSpace(review, 9);
+            review.addView(label("收入 ¥ " + decimal(income) + "    已确认 " + count + " 笔", 13, MUTED, false));
+            if (pending > 0) {
+                addSpace(review, 8);
+                review.addView(label(pending + " 笔待核对没有计入。", 12, AMBER, false));
+            }
+            String largest = "";
+            BigDecimal largestAmount = BigDecimal.ZERO;
+            for (Map.Entry<String, BigDecimal> category : categories.entrySet()) {
+                if (category.getValue().compareTo(largestAmount) > 0) { largest = category.getKey(); largestAmount = category.getValue(); }
+            }
+            addSpace(review, 15);
+            if (count == 0) review.addView(label("从一笔日常消费开始，记录积累后就能回看。", 14, MUTED, false));
+            else if (!largest.isEmpty()) {
+                review.addView(label("最多的一类：" + largest + " · ¥ " + decimal(largestAmount), 14, GREEN, true));
+                addSpace(review, 9);
+                review.addView(label("回想一下：这类花费符合你的安排吗？下周只挑一个想调整的地方。", 13, MUTED, false));
+            } else review.addView(label("这 7 天暂时没有已确认支出。", 14, MUTED, false));
+        }
+        content.addView(review);
+    }
+
+    private void renderGoals() {
+        addLedgerSwitcher();
+        SavingsGoal goal = readGoal();
+        LinearLayout hero = card(GREEN);
+        hero.addView(label(isDemo() ? "虚构目标 · 演示" : "为想要的生活存一点", 12, Color.rgb(205, 223, 202), false));
+        addSpace(hero, 15);
+        hero.addView(label(goal == null ? "下一个小愿望" : goal.name, 29, WHITE, true));
+        addSpace(hero, 17);
+        if (goal == null) {
+            hero.addView(label("一本书、一段旅行，或第一笔备用金。\n给它一个金额和想完成的日期。", 15, WHITE, false));
+        } else {
+            hero.addView(label("已存 ¥ " + money(goal.savedMinor), 28, WHITE, true));
+            addSpace(hero, 10);
+            hero.addView(label("目标 ¥ " + money(goal.targetMinor) + " · " + goal.progressPercent() + "%", 14, WHITE, false));
+            addSpace(hero, 17);
+            ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            progress.setMax(100);
+            progress.setProgress((int) Math.min(100, goal.progressPercent()));
+            progress.setProgressTintList(android.content.res.ColorStateList.valueOf(Color.rgb(194, 217, 169)));
+            progress.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(60, 95, 77)));
+            progress.setContentDescription("存钱目标进度 " + goal.progressPercent() + "%");
+            hero.addView(progress, new LinearLayout.LayoutParams(-1, dp(7)));
+            addSpace(hero, 15);
+            hero.addView(label("希望完成：" + goal.targetDate, 13, Color.rgb(205, 223, 202), false));
+        }
+        content.addView(hero);
+        addSpace(content, 15);
+        Button edit = button(goal == null ? "设置存钱目标" : "更新目标与进度", true);
+        edit.setOnClickListener(v -> showGoalEditor());
+        content.addView(edit);
+        addSpace(content, 18);
+        LinearLayout detail = card(WHITE);
+        detail.addView(label(goal == null ? "给目标一点空间" : goal.remainingMinor() == 0 ? "这个愿望已经攒够了" : "一点一点，向前走", 19, INK, true));
+        addSpace(detail, 12);
+        if (goal != null && goal.remainingMinor() > 0) {
+            detail.addView(label("还差 ¥ " + money(goal.remainingMinor()), 24, INK, true));
+            addSpace(detail, 10);
+            detail.addView(label(goal.targetDate.isBefore(LocalDate.now()) ? "目标日期已过，可以按目前情况重新安排。"
+                    : "按当前日期估算，每天需存 ¥ " + money(goal.dailyNeedMinor(LocalDate.now())) + "（含今天）。", 14, MUTED, false));
+            addSpace(detail, 16);
+        }
+        detail.addView(label("已存金额由你手动更新，只用于记录进度。修改目标不会转账，也不会自动改动生活费计划中的储蓄预留。", 13, MUTED, false));
+        content.addView(detail);
+    }
+
+    private BudgetPlan readBudget() {
+        try { return new PlanStore(this, source).loadBudget(); }
+        catch (IllegalStateException invalid) { content.addView(label(invalid.getMessage(), 13, AMBER, false)); return null; }
+    }
+
+    private SavingsGoal readGoal() {
+        try { return new PlanStore(this, source).loadGoal(); }
+        catch (IllegalStateException invalid) { content.addView(label(invalid.getMessage(), 13, AMBER, false)); return null; }
+    }
+
+    private LinearLayout beginForm(String name) {
+        activeForm = name;
+        formInputs.clear();
+        formDirection = null;
+        LinearLayout fields = column();
+        fields.setPadding(dp(24), dp(8), dp(24), dp(10));
+        return fields;
+    }
+
+    private EditText field(LinearLayout fields, String title, String key, String value, boolean numeric) {
+        TextView caption = label(title, 12, MUTED, true);
+        caption.setPadding(0, dp(12), 0, dp(5));
+        fields.addView(caption);
+        EditText input = new EditText(this);
+        input.setTextSize(16);
+        input.setTextColor(INK);
+        input.setSingleLine(true);
+        input.setInputType(numeric ? InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL
+                : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setPadding(dp(12), dp(12), dp(12), dp(12));
+        input.setBackground(round(BG, 10));
+        input.setContentDescription(key);
+        input.setText(restoredDraft != null && activeForm.equals(restoredDraft.getString("form"))
+                ? restoredDraft.getString(key, value) : value);
+        fields.addView(input, new LinearLayout.LayoutParams(-1, dp(48)));
+        formInputs.put(key, input);
+        return input;
+    }
+
+    private void formNote(LinearLayout fields, String text) {
+        TextView note = label(text, 12, MUTED, false);
+        note.setLineSpacing(dp(4), 1);
+        note.setPadding(0, dp(13), 0, dp(4));
+        fields.addView(note);
+    }
+
+    private AlertDialog formDialog(String title, LinearLayout fields, String action) {
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(fields);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(title).setView(scroll)
+                .setNegativeButton("取消", null).setPositiveButton(action, null).create();
+        activeDialog = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (activeDialog == dialog) activeDialog = null;
+            activeForm = "";
+            activeEntryId = "";
+            formInputs.clear();
+            formDirection = null;
+            restoredDraft = null;
+        });
+        dialog.show();
+        dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+                | android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+        return dialog;
+    }
+
+    private void showManualEntry() {
+        if (busy || loading) return;
+        final String selectedSource = source;
+        LinearLayout fields = beginForm("manual");
+        activeEntryId = restoredDraft != null && "manual".equals(restoredDraft.getString("form"))
+                ? restoredDraft.getString("entry_id", UUID.randomUUID().toString()) : UUID.randomUUID().toString();
+        final String entryId = activeEntryId;
+        formNote(fields, isDemo() ? "将保存到演示账本，全部视为虚构。" : "将保存到本机真实账本。可以在交易详情中删除误记。");
+        fields.addView(label("收支类型", 12, MUTED, true));
+        Spinner direction = new Spinner(this);
+        direction.setContentDescription("manual_direction");
+        ArrayAdapter<String> choices = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new String[]{"支出", "收入"});
+        choices.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        direction.setAdapter(choices);
+        if (restoredDraft != null) direction.setSelection(restoredDraft.getInt("direction", 0));
+        fields.addView(direction, new LinearLayout.LayoutParams(-1, dp(48)));
+        formDirection = direction;
+        EditText amount = field(fields, "金额（元）", "manual_amount", "", true);
+        EditText title = field(fields, "记了什么", "manual_title", "", false);
+        EditText category = field(fields, "分类（例如餐饮、交通、生活费）", "manual_category", "日常", false);
+        EditText date = field(fields, "日期（YYYY-MM-DD）", "manual_date", LocalDate.now().toString(), false);
+        EditText note = field(fields, "备注（选填）", "manual_note", "", false);
+        formNote(fields, "手动记录不会与微信导入自动合并。已有同一笔导入记录时，请勿重复手记。转入自己的账户不是新增收入。");
+        AlertDialog dialog = formDialog("记一笔" + (isDemo() ? " · 演示" : ""), fields, "保存记录");
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            try {
+                long amountMinor = parseMoney(amount, false);
+                LocalDate selectedDate = parseDate(date);
+                if (selectedDate.isAfter(LocalDate.now())) throw fieldError(date, "记账日期不能晚于今天");
+                String entryTitle = requiredText(title, "请填写这笔记录的名称", 128);
+                String entryCategory = requiredText(category, "请填写分类", 64);
+                String entryNote = cleanText(note, 500);
+                long occurredAt = selectedDate.equals(LocalDate.now()) ? System.currentTimeMillis()
+                        : selectedDate.atTime(12, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+                Transaction transaction = Transaction.manual(entryId, entryTitle, entryCategory, entryNote,
+                        direction.getSelectedItemPosition() == 0 ? -amountMinor : amountMinor, occurredAt);
+                busy = true;
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
+                dialog.setCancelable(false);
+                io.execute(() -> {
+                    boolean success;
+                    try (LedgerStore store = new LedgerStore(this)) { store.insert(transaction, selectedSource); success = true; }
+                    catch (RuntimeException error) { success = false; }
+                    if (success) getContentResolver().notifyChange(EVENTS, null);
+                    final boolean result = success;
+                    main.post(() -> {
+                        if (!alive()) return;
+                        busy = false;
+                        if (result) {
+                            dialog.dismiss();
+                            loadRecords();
+                            android.widget.Toast.makeText(this, "已保存 1 笔记录", android.widget.Toast.LENGTH_SHORT).show();
+                        } else {
+                            dialog.setCancelable(true);
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(true);
+                            amount.setError("暂时无法保存，请重试");
+                        }
+                    });
+                });
+            } catch (IllegalArgumentException error) {
+                if (amount.getError() == null && title.getError() == null && category.getError() == null
+                        && date.getError() == null && note.getError() == null) amount.setError("请检查金额、日期和填写内容");
+            }
+        });
+        restoredDraft = null;
+    }
+
+    private void showBudgetEditor() {
+        BudgetPlan previous;
+        try { previous = new PlanStore(this, source).loadBudget(); } catch (IllegalStateException error) { previous = null; }
+        final String selectedSource = source;
+        LocalDate today = LocalDate.now();
+        LinearLayout fields = beginForm("budget");
+        formNote(fields, "期初可用余额 + 期内已记收入 − 期内已记支出 − 未支付固定预留 − 本期储蓄预留。日期范围包含首尾两天。");
+        EditText start = field(fields, "开始日期（YYYY-MM-DD）", "budget_start", previous == null ? today.withDayOfMonth(1).toString() : previous.startDate.toString(), false);
+        EditText end = field(fields, "结束日期（YYYY-MM-DD）", "budget_end", previous == null ? today.withDayOfMonth(today.lengthOfMonth()).toString() : previous.endInclusive.toString(), false);
+        EditText opening = field(fields, "期初可用余额（元）", "budget_opening", previous == null ? "" : money(previous.openingMinor), true);
+        EditText fixed = field(fields, "尚未支付的固定预留（元）", "budget_fixed", previous == null ? "0.00" : money(previous.fixedReserveMinor), true);
+        EditText savings = field(fields, "本期储蓄预留（元）", "budget_savings", previous == null ? "0.00" : money(previous.savingsReserveMinor), true);
+        formNote(fields, "期初余额指开始日记录前的可用金额，已包含的钱不要再次记为收入。固定开销支付并记账后，请相应调减固定预留。存钱转出若已记为支出，也应调减储蓄预留，避免重复扣减。储蓄预留与目标的已存金额分别维护。");
+        AlertDialog dialog = formDialog("生活费计划" + (isDemo() ? " · 演示" : ""), fields, "保存计划");
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            try {
+                LocalDate startDate = parseDate(start);
+                LocalDate endDate = parseDate(end);
+                if (endDate.isBefore(startDate)) throw fieldError(end, "结束日期不能早于开始日期");
+                BudgetPlan plan = new BudgetPlan(startDate, endDate, parseMoney(opening, true), parseMoney(fixed, true), parseMoney(savings, true));
+                new PlanStore(this, selectedSource).saveBudget(plan);
+                dialog.dismiss();
+                render();
+            } catch (IllegalArgumentException error) { opening.setError("请检查金额与日期，金额最多保留两位小数"); }
+            catch (IllegalStateException error) { opening.setError(error.getMessage()); }
+        });
+        restoredDraft = null;
+    }
+
+    private void showGoalEditor() {
+        SavingsGoal previous;
+        try { previous = new PlanStore(this, source).loadGoal(); } catch (IllegalStateException error) { previous = null; }
+        final String selectedSource = source;
+        LinearLayout fields = beginForm("goal");
+        EditText name = field(fields, "目标名称", "goal_name", previous == null ? "" : previous.name, false);
+        EditText target = field(fields, "目标金额（元）", "goal_target", previous == null ? "" : money(previous.targetMinor), true);
+        EditText saved = field(fields, "目前已存（元）", "goal_saved", previous == null ? "0.00" : money(previous.savedMinor), true);
+        EditText date = field(fields, "希望完成日期（YYYY-MM-DD）", "goal_date", previous == null ? LocalDate.now().plusDays(90).toString() : previous.targetDate.toString(), false);
+        formNote(fields, "这里记录你已经存下的金额，不会操作银行账户。更新进度不会新增收支，也不会改变生活费计划里的储蓄预留。");
+        AlertDialog dialog = formDialog("存钱目标" + (isDemo() ? " · 演示" : ""), fields, "保存目标");
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            try {
+                SavingsGoal goal = new SavingsGoal(requiredText(name, "给目标起个名字", 128), parseMoney(target, false), parseMoney(saved, true), parseDate(date));
+                new PlanStore(this, selectedSource).saveGoal(goal);
+                dialog.dismiss();
+                render();
+            } catch (IllegalArgumentException error) { target.setError("请检查目标金额、日期和名称"); }
+            catch (IllegalStateException error) { target.setError(error.getMessage()); }
+        });
+        restoredDraft = null;
+    }
+
+    private void showSpendingTrial() {
+        BudgetPlan plan;
+        try { plan = new PlanStore(this, source).loadBudget(); }
+        catch (IllegalStateException error) { message("请重新设置计划", error.getMessage()); return; }
+        if (plan == null) { message("先设置生活费计划", "填好本期金额与日期，就能查看一笔消费对剩余生活费的影响。"); return; }
+        final BudgetEngine.Snapshot snapshot;
+        try { snapshot = BudgetEngine.summarize(plan, records, LocalDate.now(), ZoneId.systemDefault()); }
+        catch (ArithmeticException error) { message("暂时无法试算", "记录的累计金额超出可计算范围，请先核对账本金额。"); return; }
+        LinearLayout fields = beginForm("trial");
+        formNote(fields, "试算只扣除一笔计划消费，不会保存交易或改动预算、目标。");
+        EditText amount = field(fields, "计划花费（元）", "trial_amount", "", true);
+        TextView result = label("输入金额，看看消费后的可用生活费。", 15, INK, false);
+        result.setContentDescription("trial_result");
+        result.setLineSpacing(dp(6), 1);
+        result.setPadding(0, dp(18), 0, dp(10));
+        fields.addView(result);
+        AlertDialog dialog = formDialog("消费试算", fields, "计算影响");
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            try {
+                long planned = parseMoney(amount, false);
+                long after = Math.subtractExact(snapshot.remainingMinor, planned);
+                String text = "本期可用：¥ " + money(snapshot.remainingMinor)
+                        + "\n消费后可用：¥ " + money(after)
+                        + (snapshot.active ? "\n消费后每日参考：¥ " + money(Math.max(0, after) / snapshot.daysLeft) : "\n本期未进行，请先调整计划日期。")
+                        + (after < 0 ? "\n这笔消费会超出本期可用金额。" : "");
+                SavingsGoal goal = new PlanStore(this, source).loadGoal();
+                if (goal != null && goal.remainingMinor() > 0) {
+                    text += "\n\n目标「" + goal.name + "」还差 ¥ " + money(goal.remainingMinor())
+                            + "。本次试算保留原有储蓄预留，目标金额和日期不变。";
+                }
+                result.setText(text);
+            } catch (IllegalArgumentException | ArithmeticException error) { amount.setError("请输入有效金额，最多保留两位小数"); }
+            catch (IllegalStateException error) { result.setText(error.getMessage()); }
+        });
+        restoredDraft = null;
+    }
+
+    private static long parseMoney(EditText input, boolean allowZero) {
+        input.setError(null);
+        String value = input.getText().toString().trim();
+        if (!value.matches("[0-9]{1,12}(\\.[0-9]{1,2})?")) throw fieldError(input, "请输入金额，最多保留两位小数");
+        long minor;
+        try { minor = new BigDecimal(value).movePointRight(2).longValueExact(); }
+        catch (ArithmeticException error) { throw fieldError(input, "金额过大"); }
+        if (minor > Transaction.MAX_ABS_AMOUNT_MINOR || (!allowZero && minor == 0)) {
+            throw fieldError(input, allowZero ? "金额过大" : "金额须大于 0，且不能超出上限");
+        }
+        return minor;
+    }
+
+    private static LocalDate parseDate(EditText input) {
+        input.setError(null);
+        String value = input.getText().toString().trim();
+        try {
+            if (!value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) throw new IllegalArgumentException();
+            LocalDate result = LocalDate.parse(value);
+            if (result.getYear() < 2000 || result.getYear() > 2100) throw new IllegalArgumentException();
+            return result;
+        } catch (RuntimeException error) { throw fieldError(input, "请填写 2000–2100 年内的有效日期，如 2026-10-03"); }
+    }
+
+    private static String requiredText(EditText input, String error, int limit) {
+        String value = cleanText(input, limit);
+        if (value.isEmpty()) throw fieldError(input, error);
+        return value;
+    }
+
+    private static String cleanText(EditText input, int limit) {
+        input.setError(null);
+        String value = input.getText().toString().trim();
+        if (value.length() > limit) throw fieldError(input, "最多填写 " + limit + " 个字符");
+        for (int i = 0; i < value.length(); i++) if (Character.isISOControl(value.charAt(i))) {
+            throw fieldError(input, "请使用普通文字，不能包含控制字符");
+        }
+        return value;
+    }
+
+    private static IllegalArgumentException fieldError(EditText input, String message) {
+        input.setError(message);
+        input.requestFocus();
+        return new IllegalArgumentException(message);
+    }
+
+    private static String money(long minor) { return BigDecimal.valueOf(minor, 2).toPlainString(); }
 
     private LinearLayout metric(String name, String value) {
         LinearLayout box = column();
@@ -369,20 +896,45 @@ public final class MainActivity extends Activity {
         String body = "金额：" + signedAmount(transaction.amountMinor) + " 元\n"
                 + "时间：" + formatDate(transaction.occurredAt, "yyyy年MM月dd日 HH:mm:ss") + "\n"
                 + "状态：" + valueOr(transaction.status, "未提供") + "\n"
-                + "支付方式：" + valueOr(transaction.paymentMethod, "未提供") + "\n"
+                + ("manual".equals(transaction.provider) ? "分类：" : "支付方式：") + valueOr(transaction.paymentMethod, "未提供") + "\n"
                 + "商品 / 说明：" + valueOr(transaction.description, "未提供") + "\n"
                 + "交易单号：" + valueOr(transaction.tradeId, "未提供") + "\n\n"
                 + (transaction.reviewRequired ? "待核对：" + valueOr(transaction.reviewReason, "信息不足，暂不计入汇总。")
                 : "该记录计入收支汇总。") + "\n\n"
-                + (isDemo() ? "这是纯虚构演示记录。" : "来源：本机接收或手动导入的微信详情数据。请与微信原始账单核对。") ;
+                + (isDemo() ? "这是纯虚构演示记录。" : "manual".equals(transaction.provider)
+                ? "来源：你手动填写的记录。可以删除误记后重新填写。" : "来源：本机接收或手动导入的微信详情数据。请与微信原始账单核对。") ;
         TextView detail = label(body, 14, INK, false);
         detail.setTextIsSelectable(true);
         detail.setLineSpacing(dp(6), 1);
         detail.setPadding(dp(24), dp(12), dp(24), dp(16));
         ScrollView scroll = new ScrollView(this);
         scroll.addView(detail);
-        new AlertDialog.Builder(this).setTitle(valueOr(transaction.counterparty, "交易详情"))
-                .setView(scroll).setPositiveButton("知道了", null).show();
+        AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle(valueOr(transaction.counterparty, "交易详情"))
+                .setView(scroll).setPositiveButton("知道了", null);
+        if ("manual".equals(transaction.provider)) {
+            final String selectedSource = source;
+            builder.setNeutralButton("删除这笔手动记录", (dialog, which) -> new AlertDialog.Builder(this)
+                    .setTitle("删除手动记录？").setMessage("将从当前账本删除「" + transaction.counterparty + "」，无法撤销。生活费估算会随之更新。")
+                    .setNegativeButton("取消", null).setPositiveButton("删除记录", (confirm, action) -> {
+                        if (busy) return;
+                        busy = true;
+                        render();
+                        io.execute(() -> {
+                            boolean success;
+                            try (LedgerStore store = new LedgerStore(this)) { success = store.deleteManual(transaction.id, selectedSource); }
+                            catch (RuntimeException error) { success = false; }
+                            if (success) getContentResolver().notifyChange(EVENTS, null);
+                            final boolean result = success;
+                            main.post(() -> {
+                                if (!alive()) return;
+                                busy = false;
+                                loadRecords();
+                                if (!result) message("未删除记录", "记录可能已经删除，或本机存储暂时无法操作。");
+                            });
+                        });
+                    }).show());
+        }
+        builder.show();
     }
 
     private void renderCapture() {
@@ -526,6 +1078,11 @@ public final class MainActivity extends Activity {
         content.addView(current);
         addSpace(content, 18);
 
+        Button capture = button("微信采集 · 实验功能", false);
+        capture.setOnClickListener(v -> { page = 4; render(); });
+        content.addView(capture);
+        addSpace(content, 14);
+
         LinearLayout files = card(WHITE);
         files.addView(label("导入与导出", 18, INK, true));
         addSpace(files, 10);
@@ -561,7 +1118,7 @@ public final class MainActivity extends Activity {
         data.addView(clear);
         content.addView(data);
         addSpace(content, 17);
-        content.addView(label("Tallybook · 本地安卓研究原型\n采集实现参考 AutoAccounting 的微信查看页 Hook 思路。", 11, MUTED, false));
+        content.addView(label("Tallybook · 生活费与存钱计划 0.2\n采集实现参考 AutoAccounting 的微信查看页 Hook 思路。", 11, MUTED, false));
     }
 
     private void switchLedger(String nextSource) {
@@ -595,6 +1152,7 @@ public final class MainActivity extends Activity {
                     }
                     if (inserted == 0) throw new IOException("缺少演示数据");
                 }
+                new PlanStore(this, LedgerStore.DEMO).initializeDemo(LocalDate.now());
             } catch (Exception exception) { failure = "无法加载演示数据。请重新安装完整的应用包后再试。"; }
             final String result = failure;
             main.post(() -> {
@@ -676,7 +1234,8 @@ public final class MainActivity extends Activity {
                     success = true;
                     title = inserted ? "已导入 1 笔记录" : "已更新已有记录";
                     body = "已保存到真实账本。" + (transaction.reviewRequired
-                            ? "这笔交易需要核对，暂不计入汇总。" : "请与微信原始账单核对金额和时间。")
+                            ? "这笔交易需要核对，暂不计入汇总。" : "manual".equals(transaction.provider)
+                            ? "这是一份手动记账记录，请核对是否已经记过。" : "请与微信原始账单核对金额和时间。")
                             + "\n\n手动导入不表示微信采集已连接。";
                     getContentResolver().notifyChange(EVENTS, null);
                 }
@@ -691,7 +1250,7 @@ public final class MainActivity extends Activity {
             main.post(() -> {
                 if (!alive()) return;
                 busy = false;
-                if (imported) { source = LedgerStore.WECHAT; page = 0; records.clear(); loading = true; }
+                if (imported) { source = LedgerStore.WECHAT; page = 1; records.clear(); loading = true; }
                 render();
                 loadRecords();
                 message(finalTitle, finalBody);
@@ -710,14 +1269,16 @@ public final class MainActivity extends Activity {
                 try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
                     if (out == null) throw new IOException("无法写入所选位置");
                     out.write(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
-                    writeCsvLine(out, "账本", "时间", "交易方", "金额(元)", "状态", "支付方式", "说明", "交易单号", "待核对", "核对原因");
+                    writeCsvLine(out, "账本", "时间", "交易方", "金额(元)", "状态", "支付方式", "说明", "交易单号", "待核对", "核对原因", "记录来源", "手动分类");
                     for (Transaction transaction : snapshot) {
                         writeCsvLine(out, LedgerStore.DEMO.equals(selectedSource) ? "演示（虚构）" : "真实",
                                 formatDate(transaction.occurredAt, "yyyy-MM-dd HH:mm:ss"),
                                 safeSpreadsheetText(transaction.counterparty), decimal(BigDecimal.valueOf(transaction.amountMinor, 2)),
                                 safeSpreadsheetText(transaction.status), safeSpreadsheetText(transaction.paymentMethod),
                                 safeSpreadsheetText(transaction.description), "'" + valueOr(transaction.tradeId, ""),
-                                transaction.reviewRequired ? "是" : "否", safeSpreadsheetText(transaction.reviewReason));
+                                transaction.reviewRequired ? "是" : "否", safeSpreadsheetText(transaction.reviewReason),
+                                "manual".equals(transaction.provider) ? "手动记账" : "微信详情",
+                                "manual".equals(transaction.provider) ? safeSpreadsheetText(transaction.paymentMethod) : "");
                     }
                 }
                 title = "CSV 已导出";
@@ -736,7 +1297,7 @@ public final class MainActivity extends Activity {
     private void confirmClear() {
         final String selectedSource = source;
         new AlertDialog.Builder(this).setTitle("清空" + (isDemo() ? "演示" : "真实") + "账本？")
-                .setMessage("将删除此账本的全部本机记录。" + (isDemo() ? "真实账本不受影响，之后可重新加载演示数据。"
+                .setMessage("将删除此账本的全部本机记录、生活费计划和存钱目标。" + (isDemo() ? "真实账本不受影响，之后可重新加载演示数据。"
                         : "此操作不能撤销，建议先导出 CSV。微信中的原始账单不受影响。"))
                 .setNegativeButton("取消", null)
                 .setPositiveButton("清空此账本", (dialog, which) -> {
@@ -744,8 +1305,14 @@ public final class MainActivity extends Activity {
                     render();
                     io.execute(() -> {
                         boolean cleared;
-                        try (LedgerStore store = new LedgerStore(this)) { store.clear(selectedSource); cleared = true; }
+                        try (LedgerStore store = new LedgerStore(this)) {
+                            store.clear(selectedSource);
+                            new PlanStore(this, selectedSource).clear();
+                            cleared = true;
+                        }
                         catch (Exception error) { cleared = false; }
+                        // A new Activity may already be observing after a configuration change.
+                        getContentResolver().notifyChange(EVENTS, null);
                         final boolean result = cleared;
                         main.post(() -> {
                             if (!alive()) return;

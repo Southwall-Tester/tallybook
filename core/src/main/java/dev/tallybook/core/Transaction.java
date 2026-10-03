@@ -13,6 +13,8 @@ import java.util.Set;
 /** Minimal local record. Money is signed CNY cents; time is Unix milliseconds. */
 public final class Transaction {
     public static final String PROVIDER = "wechat";
+    public static final String MANUAL_PROVIDER = "manual";
+    public static final String MANUAL_STATUS = "手动记录";
     public static final int SCHEMA_VERSION = 1;
     public static final long MIN_OCCURRED_AT = 946684800000L; // 2000-01-01 UTC
     public static final long MAX_OCCURRED_AT = 4102444800000L; // 2100-01-01 UTC, exclusive
@@ -24,7 +26,7 @@ public final class Transaction {
     private static final Set<String> CONFIRMED_STATUSES = new HashSet<>(Arrays.asList(
             "支付成功", "交易成功", "已支付", "收款成功", "已收款"));
 
-    public final String provider = PROVIDER;
+    public final String provider;
     public final String id;
     public final String tradeId;
     public final String counterparty;
@@ -40,13 +42,32 @@ public final class Transaction {
     public Transaction(String tradeId, String counterparty, String status, String paymentMethod,
                        String description, long amountMinor, long occurredAt,
                        boolean reviewRequired, String reviewReason) {
-        this.tradeId = checkedText(tradeId, 128, true, "tradeId");
+        this(PROVIDER, tradeId, counterparty, status, paymentMethod, description, amountMinor,
+                occurredAt, reviewRequired, reviewReason);
+    }
+
+    /** A deliberate user entry; entryId is stable across edits and is normally a UUID. */
+    public static Transaction manual(String entryId, String title, String category, String note,
+                                     long signedAmount, long occurredAt) {
+        return new Transaction(MANUAL_PROVIDER, entryId, title, MANUAL_STATUS, category, note,
+                signedAmount, occurredAt, false, "");
+    }
+
+    private Transaction(String provider, String tradeId, String counterparty, String status,
+                        String paymentMethod, String description, long amountMinor, long occurredAt,
+                        boolean reviewRequired, String reviewReason) {
+        if (!PROVIDER.equals(provider) && !MANUAL_PROVIDER.equals(provider)) {
+            throw new IllegalArgumentException("Unsupported transaction provider");
+        }
+        this.provider = provider;
+        boolean manual = MANUAL_PROVIDER.equals(provider);
+        this.tradeId = checkedText(tradeId, 128, !manual, "tradeId");
         if (!this.tradeId.isEmpty() && !this.tradeId.matches("[A-Za-z0-9_-]{1,128}")) {
             throw new IllegalArgumentException("Invalid tradeId");
         }
         this.counterparty = checkedText(counterparty, 1024, false, "counterparty");
         this.status = checkedText(status, 256, true, "status");
-        this.paymentMethod = checkedText(paymentMethod, 512, true, "paymentMethod");
+        this.paymentMethod = checkedText(paymentMethod, 512, !manual, "paymentMethod");
         this.description = checkedText(description, 2048, true, "description");
         if (amountMinor == 0 || amountMinor > MAX_ABS_AMOUNT_MINOR || amountMinor < -MAX_ABS_AMOUNT_MINOR) {
             throw new IllegalArgumentException("Invalid nonzero CNY amount");
@@ -61,11 +82,14 @@ public final class Transaction {
         if (!reviewRequired && !this.reviewReason.isEmpty()) {
             throw new IllegalArgumentException("Review reason without review flag");
         }
-        if (!reviewRequired && (this.tradeId.isEmpty()
+        if (manual && (!MANUAL_STATUS.equals(this.status) || reviewRequired)) {
+            throw new IllegalArgumentException("Invalid manual transaction status");
+        }
+        if (!manual && !reviewRequired && (this.tradeId.isEmpty()
                 || !isConfirmedStatus(this.status) || isTransferLike(this.counterparty, this.description))) {
             throw new IllegalArgumentException("Transaction requires review");
         }
-        this.id = calculateId(this.tradeId, this.counterparty, this.paymentMethod, this.description,
+        this.id = calculateId(provider, this.tradeId, this.counterparty, this.paymentMethod, this.description,
                 amountMinor, occurredAt);
     }
 
@@ -73,7 +97,7 @@ public final class Transaction {
         try {
             JSONObject json = new JSONObject();
             json.put("schemaVersion", SCHEMA_VERSION);
-            json.put("provider", PROVIDER);
+            json.put("provider", provider);
             json.put("id", id);
             json.put("tradeId", tradeId);
             json.put("counterparty", counterparty);
@@ -99,13 +123,13 @@ public final class Transaction {
             JSONObject json = JsonInput.object(source);
             Set<String> keys = new HashSet<>();
             json.keys().forEachRemaining(keys::add);
-            if (!keys.equals(JSON_KEYS) || integer(json, "schemaVersion") != SCHEMA_VERSION
-                    || !PROVIDER.equals(string(json, "provider"))) {
+            if (!keys.equals(JSON_KEYS) || integer(json, "schemaVersion") != SCHEMA_VERSION) {
                 throw new IllegalArgumentException("Unsupported record schema/provider");
             }
             Object flag = json.get("reviewRequired");
             if (!(flag instanceof Boolean)) throw new IllegalArgumentException("Invalid review flag");
-            Transaction transaction = new Transaction(string(json, "tradeId"), string(json, "counterparty"),
+            Transaction transaction = new Transaction(string(json, "provider"),
+                    string(json, "tradeId"), string(json, "counterparty"),
                     string(json, "status"), string(json, "paymentMethod"), string(json, "description"),
                     integer(json, "amountMinor"), integer(json, "occurredAt"),
                     (Boolean) flag, string(json, "reviewReason"));
@@ -130,9 +154,9 @@ public final class Transaction {
                 || text.contains("还款") || text.contains("零钱通") || text.contains("理财");
     }
 
-    private static String calculateId(String tradeId, String counterparty, String paymentMethod,
+    private static String calculateId(String provider, String tradeId, String counterparty, String paymentMethod,
                                       String description, long amountMinor, long occurredAt) {
-        JSONArray identity = new JSONArray().put(PROVIDER);
+        JSONArray identity = new JSONArray().put(provider);
         if (!tradeId.isEmpty()) {
             identity.put("tradeId").put(tradeId);
         } else {
@@ -142,7 +166,7 @@ public final class Transaction {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(identity.toString().getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder("wechat:");
+            StringBuilder hex = new StringBuilder(provider).append(':');
             for (byte value : digest) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
             return hex.toString();
         } catch (NoSuchAlgorithmException e) {
