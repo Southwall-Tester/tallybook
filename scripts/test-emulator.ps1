@@ -1,3 +1,4 @@
+param([switch]$IntegrationOnly)
 $ErrorActionPreference = 'Stop'
 $projectDir = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectDir
@@ -15,7 +16,7 @@ $output = & adb -s $serial shell am instrument -w dev.tallybook.app.test/dev.tal
 $output | ForEach-Object { Write-Output $_ }
 New-Item -ItemType Directory -Force -Path '.\artifacts' | Out-Null
 $output | Set-Content -LiteralPath '.\artifacts\instrumentation.txt' -Encoding UTF8
-if (!($output -match 'TALLYBOOK_SMOKE_OK checks=16')) { throw 'Android integration checks failed.' }
+if (!(($output | Out-String) -match 'TALLYBOOK_SMOKE_OK checks=\d+') -or (($output | Out-String) -match 'TALLYBOOK_SMOKE_FAILED')) { throw 'Android integration checks failed.' }
 $savedErrorPreference = $ErrorActionPreference
 try {
     $ErrorActionPreference = 'Continue' # Native stderr is the expected rejection in this check.
@@ -23,5 +24,7 @@ try {
 } finally { $ErrorActionPreference = $savedErrorPreference }
 if (!(($denied | Out-String) -match 'Caller not permitted')) { throw 'External UID was not rejected.' }
 'Shell UID denied by CaptureProvider guard.' | Set-Content -LiteralPath '.\artifacts\provider-access-check.txt' -Encoding UTF8
-& python '.\scripts\ui-smoke.py'
+if ($IntegrationOnly) { return }
+$env:PYTHONIOENCODING = 'utf-8'
+& python -u '.\scripts\ui-smoke.py'
 if ($LASTEXITCODE -ne 0) { throw 'UI smoke check failed.' }

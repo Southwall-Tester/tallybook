@@ -73,6 +73,26 @@ public final class LedgerStore extends SQLiteOpenHelper {
         getWritableDatabase().delete("transactions", "source = ?", new String[]{source});
     }
 
+    /** Removes only a manually entered record, in exactly the selected ledger. */
+    public boolean deleteManual(String id, String source) {
+        requireSource(source);
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            try (Cursor cursor = db.query("transactions", new String[]{"payload"},
+                    "source = ? AND transaction_id = ?", new String[]{source, id}, null, null, null)) {
+                if (!cursor.moveToFirst()) return false;
+                if (!"manual".equals(Transaction.fromJson(cursor.getString(0)).provider)) return false;
+            }
+            boolean deleted = db.delete("transactions", "source = ? AND transaction_id = ?",
+                    new String[]{source, id}) == 1;
+            db.setTransactionSuccessful();
+            return deleted;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
     private static void requireSource(String source) {
         if (!WECHAT.equals(source) && !DEMO.equals(source)) {
             throw new IllegalArgumentException("未知账本来源");

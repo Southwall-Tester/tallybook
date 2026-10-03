@@ -11,6 +11,9 @@ import android.os.Bundle;
 import dev.tallybook.core.ParseResult;
 import dev.tallybook.core.Transaction;
 import dev.tallybook.core.WechatBillParser;
+import dev.tallybook.core.BudgetPlan;
+import dev.tallybook.core.SavingsGoal;
+import java.time.LocalDate;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -83,6 +86,19 @@ public final class PrototypeInstrumentation extends Instrumentation {
         Bundle rejected = context.getContentResolver().call(bridge, "record", null, invalid);
         check(rejected != null && !rejected.getBoolean("accepted") && store.list("wechat").size() == 1,
             "Provider rejects incomplete normalized records");
+        Transaction manual = Transaction.manual("manual-integration-1", "测试午餐", "餐饮", "虚构测试",
+            -2500L, tx.occurredAt);
+        check("manual".equals(Transaction.fromJson(manual.toJson()).provider), "Manual JSON preserves its provider on Android");
+        check(store.insert(manual, "wechat") && store.insert(manual, "demo"), "Manual entry can be saved independently in both ledgers");
+        check(store.deleteManual(manual.id, "wechat") && !store.deleteManual(manual.id, "wechat")
+            && store.list("demo").size() == 2, "Deleting a manual entry leaves the other ledger intact");
+        check(!store.deleteManual(tx.id, "wechat") && store.list("wechat").size() == 1,
+            "Manual deletion cannot remove an imported WeChat transaction");
+        Bundle manualPayload = new Bundle();
+        manualPayload.putString("transaction", manual.toJson());
+        Bundle manualRejected = context.getContentResolver().call(bridge, "record", null, manualPayload);
+        check(manualRejected != null && !manualRejected.getBoolean("accepted") && store.list("wechat").size() == 1,
+            "WeChat capture bridge rejects manual-provider payloads");
         boolean denied = false;
         try { context.getContentResolver().query(bridge, null, null, null, null); }
         catch (SecurityException expected) { denied = true; }
@@ -93,6 +109,27 @@ public final class PrototypeInstrumentation extends Instrumentation {
             if ("android.permission.INTERNET".equals(permission)) hasInternet = true;
         }
         check(!hasInternet, "APK requests no INTERNET permission");
+        PlanStore realPlans = new PlanStore(context, "wechat");
+        PlanStore demoPlans = new PlanStore(context, "demo");
+        realPlans.clear();
+        demoPlans.clear();
+        LocalDate today = LocalDate.now();
+        BudgetPlan plan = new BudgetPlan(today, today.plusDays(29), 200000, 30000, 20000);
+        realPlans.saveBudget(plan);
+        check(new PlanStore(context, "wechat").loadBudget().openingMinor == 200000
+            && realPlans.loadBudget().endInclusive.equals(today.plusDays(29)), "Budget dates and money survive a new store instance");
+        realPlans.saveGoal(new SavingsGoal("Test trip", 100000, 25000, today.plusDays(90)));
+        check(new PlanStore(context, "wechat").loadGoal().savedMinor == 25000,
+            "Savings progress survives a new store instance");
+        check(demoPlans.loadBudget() == null && demoPlans.loadGoal() == null,
+            "Real budget and goal never create demo plans");
+        demoPlans.initializeDemo(today);
+        check(demoPlans.loadBudget() != null && realPlans.loadBudget().openingMinor == 200000,
+            "Demo initialization does not overwrite real plans");
+        demoPlans.clear();
+        check(demoPlans.loadGoal() == null && realPlans.loadGoal().savedMinor == 25000,
+            "Clearing demo planning leaves real savings unchanged");
+        realPlans.clear();
         CaptureSettings.disable(context);
         store.clear("wechat");
         store.clear("demo");
