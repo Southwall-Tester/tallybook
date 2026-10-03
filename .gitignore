@@ -17,3 +17,4 @@ artifacts/*.csv
 artifacts/*.json
 artifacts/*.txt
 artifacts/*.sha256
+artifacts/history/
