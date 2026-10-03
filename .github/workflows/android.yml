@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build:
     name: Tests, APK and lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Check out source
@@ -37,7 +37,10 @@ jobs:
           dependency-graph: disabled
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          sdk_manager="${ANDROID_HOME:?ANDROID_HOME is unavailable}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdk_manager"
+          "$sdk_manager" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Run tests, build APK and lint
         run: bash ./gradlew :core:test :app:assembleDebug :app:lintDebug --console=plain --no-daemon
