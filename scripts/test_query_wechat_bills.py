@@ -1,12 +1,15 @@
 """Offline tests only: fictional records, fake ADB and a fake JS bridge."""
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+from contextlib import redirect_stdout
 
 
 spec = importlib.util.spec_from_file_location("query_wechat", Path(__file__).with_name("query-wechat-bills.py"))
@@ -105,6 +108,111 @@ class QueryTests(unittest.TestCase):
             saved = json.loads(files[0].read_text(encoding="utf-8"))
             self.assertEqual(saved["records"][0], row())
             self.assertEqual(len(list(location.glob("*.csv"))), 2)
+
+
+class AppSyncTests(unittest.TestCase):
+    def request(self):
+        return {"schemaVersion":1, "requestId":"a" * 64, "issuedAt":1760000000000,
+                "expiresAt":1760000300000, "pages":2, "source":"wechat", "purpose":query.PURPOSE}
+
+    def test_nonce_expiry_and_scope_validation(self):
+        original = self.request()
+        self.assertEqual(query.validate_request(original, 1760000001000), original)
+        for mutation in ({"requestId":"short"}, {"source":"demo"}, {"purpose":"unrelated"},
+                         {"pages":11}, {"pages":True}, {"expiresAt":1760000000001}):
+            with self.assertRaises(query.QueryError):
+                query.validate_request(dict(original, **mutation), 1760000001000)
+        with self.assertRaises(query.QueryError):
+            query.validate_request(original, 1760000300000)
+
+    def test_read_authorization_uses_phone_clock(self):
+        request = self.request()
+
+        class FakeAdb:
+            def run(self, *args, **kwargs):
+                return "1760000001" if args == ("shell", "date", "+%s") else json.dumps(request)
+
+        with patch.object(query.time, "time", return_value=9999999999):
+            self.assertEqual(query.read_app_request(FakeAdb()), request)
+
+    def test_envelope_is_bounded_scoped_and_rejects_credentials(self):
+        envelope = json.loads(query.make_envelope(self.request(), [row()], now_ms=1760000001000))
+        self.assertEqual(envelope["source"], "wechat")
+        self.assertEqual(envelope["status"], "ok")
+        self.assertEqual(envelope["records"], [row()])
+        with self.assertRaises(query.QueryError):
+            query.make_envelope(self.request(), [dict(row(), csrf_token="FICTION")], now_ms=1760000001000)
+        with self.assertRaises(query.QueryError):
+            query.make_envelope(self.request(), [row("fiction-%d" % i) for i in range(41)], now_ms=1760000001000)
+
+    def test_failure_envelope_has_no_error_details(self):
+        envelope = json.loads(query.make_envelope(self.request(), [], False, now_ms=1760000001000))
+        self.assertEqual(envelope["status"], "query_failed")
+        self.assertEqual(envelope["records"], [])
+        self.assertNotIn("error", envelope)
+
+    def test_cancelled_or_replaced_request_is_not_delivered(self):
+        request = self.request()
+
+        class FakeAdb:
+            written = False
+
+            def write_private_inbox(self, payload):
+                self.written = True
+
+        adb = FakeAdb()
+        with patch.object(query, "read_app_request", return_value=dict(request, requestId="b" * 64)):
+            with self.assertRaises(query.QueryError):
+                query.deliver_to_app(adb, request, [row()])
+        self.assertFalse(adb.written)
+
+    def test_expiry_during_delivery_is_a_revoked_request(self):
+        request = self.request()
+
+        class FakeAdb:
+            written = False
+
+            def write_private_inbox(self, payload):
+                self.written = True
+
+        adb = FakeAdb()
+        with patch.object(query, "read_app_request", return_value=request), \
+                patch.object(query, "phone_now_ms", return_value=request["expiresAt"]):
+            with self.assertRaises(query.RequestRevoked):
+                query.deliver_to_app(adb, request, [row()])
+        self.assertFalse(adb.written)
+
+    def test_watcher_continues_after_revocation_on_success_or_error_path(self):
+        first = self.request()
+        second = dict(first, requestId="b" * 64)
+        success = ([row()], [{"ret_code":0, "count":1, "added":1}], "page_limit")
+        for first_result in (success, query.QueryError("查询失败")):
+            with self.subTest(query_failed=isinstance(first_result, Exception)):
+                class FakeAdb:
+                    def run(self, *args, **kwargs):
+                        return ""
+
+                with patch.object(query, "read_app_request", side_effect=[first, second, KeyboardInterrupt()]), \
+                        patch.object(query, "perform_query", side_effect=[first_result, success]) as querying, \
+                        patch.object(query, "deliver_to_app", side_effect=[query.RequestRevoked("已撤销"), None]) as delivery, \
+                        patch.object(query.time, "sleep"), redirect_stdout(io.StringIO()):
+                    with self.assertRaises(KeyboardInterrupt):
+                        query.sync_app(FakeAdb(), watch=True)
+                self.assertEqual(querying.call_count, 2)
+                self.assertEqual(delivery.call_count, 2)
+                self.assertEqual(delivery.call_args_list[0].args[1], first)
+                self.assertEqual(delivery.call_args_list[1].args[1], second)
+                self.assertTrue(delivery.call_args_list[1].kwargs["success"])
+
+    def test_private_transport_never_puts_bills_in_command_line(self):
+        fake = type("Completed", (), {"returncode":0})()
+        with patch.object(query.subprocess, "run", return_value=fake) as runner:
+            query.Adb("fiction-adb", "fiction-phone").write_private_inbox(b"FICTION_PRIVATE_BILL")
+        command = runner.call_args.args[0]
+        self.assertNotIn("FICTION_PRIVATE_BILL", " ".join(command))
+        self.assertEqual(runner.call_args.kwargs["input"], b"FICTION_PRIVATE_BILL")
+        self.assertIn("inbox.tmp", command[-1])
+        self.assertIn("mv files/query-sync/inbox.tmp", command[-1])
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is needed only for offline bridge fixtures")

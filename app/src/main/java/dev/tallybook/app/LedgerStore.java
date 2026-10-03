@@ -36,6 +36,8 @@ public final class LedgerStore extends SQLiteOpenHelper {
     public boolean insert(Transaction transaction, String source) {
         requireSource(source);
         if (transaction == null) throw new IllegalArgumentException("缺少交易记录");
+        if (Transaction.QUERY_PROVIDER.equals(transaction.provider))
+            throw new IllegalArgumentException("接口查询记录须通过专用入口保存");
         ContentValues values = new ContentValues();
         values.put("source", source);
         values.put("transaction_id", transaction.id);
@@ -66,6 +68,52 @@ public final class LedgerStore extends SQLiteOpenHelper {
             }
         }
         return result;
+    }
+
+    /** Query candidates never replace a previously reviewed transaction. */
+    public boolean insertQueryIfAbsent(Transaction transaction) {
+        if (transaction == null || !Transaction.QUERY_PROVIDER.equals(transaction.provider)
+                || !transaction.reviewRequired) throw new IllegalArgumentException("仅接受待核对的接口查询记录");
+        ContentValues values = new ContentValues();
+        values.put("source", WECHAT);
+        values.put("transaction_id", transaction.id);
+        values.put("payload", transaction.toJson());
+        values.put("occurred_at", transaction.occurredAt);
+        values.put("updated_at", System.currentTimeMillis());
+        return getWritableDatabase().insertWithOnConflict("transactions", null, values,
+                SQLiteDatabase.CONFLICT_IGNORE) != -1;
+    }
+
+    public boolean confirmQuery(String id) { return changeQuery(id, false); }
+    public boolean deleteQuery(String id) { return changeQuery(id, true); }
+
+    private boolean changeQuery(String id, boolean delete) {
+        if (id == null || !id.matches("wechat_query:[a-f0-9]{64}")) return false;
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            Transaction transaction;
+            try (Cursor cursor = db.query("transactions", new String[]{"payload"},
+                    "source = ? AND transaction_id = ?", new String[]{WECHAT, id}, null, null, null)) {
+                if (!cursor.moveToFirst()) return false;
+                transaction = Transaction.fromJson(cursor.getString(0));
+                if (!Transaction.QUERY_PROVIDER.equals(transaction.provider) || !id.equals(transaction.id)) return false;
+            }
+            boolean changed;
+            if (delete) {
+                changed = db.delete("transactions", "source = ? AND transaction_id = ?",
+                        new String[]{WECHAT, id}) == 1;
+            } else {
+                if (!transaction.reviewRequired) return false;
+                ContentValues values = new ContentValues();
+                values.put("payload", transaction.confirmQuery().toJson());
+                values.put("updated_at", System.currentTimeMillis());
+                changed = db.update("transactions", values, "source = ? AND transaction_id = ?",
+                        new String[]{WECHAT, id}) == 1;
+            }
+            db.setTransactionSuccessful();
+            return changed;
+        } finally { db.endTransaction(); }
     }
 
     public void clear(String source) {

@@ -15,6 +15,11 @@ public final class Transaction {
     public static final String PROVIDER = "wechat";
     public static final String MANUAL_PROVIDER = "manual";
     public static final String MANUAL_STATUS = "手动记录";
+    public static final String QUERY_PROVIDER = "wechat_query";
+    public static final String QUERY_STATUS = "接口查询待核对";
+    public static final String QUERY_CONFIRMED_STATUS = "已核对";
+    public static final String QUERY_REVIEW_REASON = "请对照微信核对金额、收支方向和重复记录；退款、转账、充值、提现及理财需确认是否应计入收支";
+    private static final String QUERY_DESCRIPTION_PREFIX = "微信账单列表接口查询；微信状态：";
     public static final int SCHEMA_VERSION = 1;
     public static final long MIN_OCCURRED_AT = 946684800000L; // 2000-01-01 UTC
     public static final long MAX_OCCURRED_AT = 4102444800000L; // 2100-01-01 UTC, exclusive
@@ -29,6 +34,8 @@ public final class Transaction {
     public final String provider;
     public final String id;
     public final String tradeId;
+    /** Original list bill_id; present only for the query provider, never a fabricated trade number. */
+    public final String queryBillId;
     public final String counterparty;
     public final String status;
     public final String paymentMethod;
@@ -53,16 +60,40 @@ public final class Transaction {
                 signedAmount, occurredAt, false, "");
     }
 
+    public static Transaction query(String billId, String transId, String title, String wechatState,
+                                    long amountMinor, long occurredAt) {
+        String originalState = checkedText(wechatState, 256, true, "wechatState");
+        return new Transaction(QUERY_PROVIDER, transId, title, QUERY_STATUS, "",
+                QUERY_DESCRIPTION_PREFIX + originalState, amountMinor, occurredAt, true,
+                QUERY_REVIEW_REASON, billId);
+    }
+
+    public Transaction confirmQuery() {
+        if (!QUERY_PROVIDER.equals(provider)) throw new IllegalArgumentException("Only query records can be confirmed");
+        return new Transaction(provider, tradeId, counterparty, QUERY_CONFIRMED_STATUS,
+                paymentMethod, description, amountMinor, occurredAt, false, "", queryBillId);
+    }
+
     private Transaction(String provider, String tradeId, String counterparty, String status,
                         String paymentMethod, String description, long amountMinor, long occurredAt,
                         boolean reviewRequired, String reviewReason) {
-        if (!PROVIDER.equals(provider) && !MANUAL_PROVIDER.equals(provider)) {
+        this(provider, tradeId, counterparty, status, paymentMethod, description, amountMinor,
+                occurredAt, reviewRequired, reviewReason, "");
+    }
+
+    private Transaction(String provider, String tradeId, String counterparty, String status,
+                        String paymentMethod, String description, long amountMinor, long occurredAt,
+                        boolean reviewRequired, String reviewReason, String queryBillId) {
+        if (!PROVIDER.equals(provider) && !MANUAL_PROVIDER.equals(provider) && !QUERY_PROVIDER.equals(provider)) {
             throw new IllegalArgumentException("Unsupported transaction provider");
         }
         this.provider = provider;
         boolean manual = MANUAL_PROVIDER.equals(provider);
-        this.tradeId = checkedText(tradeId, 128, !manual, "tradeId");
-        if (!this.tradeId.isEmpty() && !this.tradeId.matches("[A-Za-z0-9_-]{1,128}")) {
+        boolean query = QUERY_PROVIDER.equals(provider);
+        this.queryBillId = checkedText(queryBillId, 512, !query, "queryBillId");
+        if (!query && !this.queryBillId.isEmpty()) throw new IllegalArgumentException("Unexpected query identity");
+        this.tradeId = checkedText(tradeId, query ? 512 : 128, !manual, "tradeId");
+        if (!query && !this.tradeId.isEmpty() && !this.tradeId.matches("[A-Za-z0-9_-]{1,128}")) {
             throw new IllegalArgumentException("Invalid tradeId");
         }
         this.counterparty = checkedText(counterparty, 1024, false, "counterparty");
@@ -85,12 +116,20 @@ public final class Transaction {
         if (manual && (!MANUAL_STATUS.equals(this.status) || reviewRequired)) {
             throw new IllegalArgumentException("Invalid manual transaction status");
         }
-        if (!manual && !reviewRequired && (this.tradeId.isEmpty()
+        if (query && (!this.paymentMethod.isEmpty() || occurredAt % 1000 != 0
+                || !this.description.startsWith(QUERY_DESCRIPTION_PREFIX)
+                || this.description.length() > QUERY_DESCRIPTION_PREFIX.length() + 256
+                || (reviewRequired ? !QUERY_STATUS.equals(this.status) || !QUERY_REVIEW_REASON.equals(this.reviewReason)
+                                   : !QUERY_CONFIRMED_STATUS.equals(this.status)))) {
+            throw new IllegalArgumentException("Invalid query transaction status");
+        }
+        if (!manual && !query && !reviewRequired && (this.tradeId.isEmpty()
                 || !isConfirmedStatus(this.status) || isTransferLike(this.counterparty, this.description))) {
             throw new IllegalArgumentException("Transaction requires review");
         }
-        this.id = calculateId(provider, this.tradeId, this.counterparty, this.paymentMethod, this.description,
-                amountMinor, occurredAt);
+        this.id = query ? digestId(provider, new JSONArray().put(provider).put(this.queryBillId)
+                .put(this.tradeId).put(occurredAt)) : calculateId(provider, this.tradeId, this.counterparty,
+                this.paymentMethod, this.description, amountMinor, occurredAt);
     }
 
     public String toJson() {
@@ -100,6 +139,7 @@ public final class Transaction {
             json.put("provider", provider);
             json.put("id", id);
             json.put("tradeId", tradeId);
+            if (QUERY_PROVIDER.equals(provider)) json.put("queryBillId", queryBillId);
             json.put("counterparty", counterparty);
             json.put("status", status);
             json.put("paymentMethod", paymentMethod);
@@ -123,7 +163,10 @@ public final class Transaction {
             JSONObject json = JsonInput.object(source);
             Set<String> keys = new HashSet<>();
             json.keys().forEachRemaining(keys::add);
-            if (!keys.equals(JSON_KEYS) || integer(json, "schemaVersion") != SCHEMA_VERSION) {
+            boolean query = QUERY_PROVIDER.equals(string(json, "provider"));
+            Set<String> expectedKeys = new HashSet<>(JSON_KEYS);
+            if (query) expectedKeys.add("queryBillId");
+            if (!keys.equals(expectedKeys) || integer(json, "schemaVersion") != SCHEMA_VERSION) {
                 throw new IllegalArgumentException("Unsupported record schema/provider");
             }
             Object flag = json.get("reviewRequired");
@@ -132,7 +175,7 @@ public final class Transaction {
                     string(json, "tradeId"), string(json, "counterparty"),
                     string(json, "status"), string(json, "paymentMethod"), string(json, "description"),
                     integer(json, "amountMinor"), integer(json, "occurredAt"),
-                    (Boolean) flag, string(json, "reviewReason"));
+                    (Boolean) flag, string(json, "reviewReason"), query ? string(json, "queryBillId") : "");
             if (!transaction.id.equals(string(json, "id"))) {
                 throw new IllegalArgumentException("Record id does not match transaction");
             }
@@ -163,6 +206,10 @@ public final class Transaction {
             identity.put("fingerprint").put(counterparty).put(paymentMethod).put(description)
                     .put(amountMinor).put(occurredAt);
         }
+        return digestId(provider, identity);
+    }
+
+    private static String digestId(String provider, JSONArray identity) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(identity.toString().getBytes(StandardCharsets.UTF_8));

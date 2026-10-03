@@ -66,6 +66,7 @@ public final class MainActivity extends Activity {
     private static final int AMBER = Color.rgb(139, 100, 36);
     private static final int REQUEST_IMPORT = 101;
     private static final int REQUEST_EXPORT = 102;
+    private static final int REQUEST_QUERY = 104;
     private static final int MAX_JSON_BYTES = 256 * 1024;
     private static final Uri EVENTS = Uri.parse("content://dev.tallybook.app.capture/events");
 
@@ -129,6 +130,7 @@ public final class MainActivity extends Activity {
         getContentResolver().registerContentObserver(EVENTS, true, observer);
         main.removeCallbacks(statusTicker);
         main.post(statusTicker);
+        consumeQueryInbox();
         loadRecords();
     }
 
@@ -163,6 +165,38 @@ public final class MainActivity extends Activity {
 
     private boolean alive() {
         return !isFinishing() && !isDestroyed();
+    }
+
+    private void consumeQueryInbox() {
+        if (io.isShutdown()) return;
+        io.execute(() -> {
+            try {
+                QuerySyncStore.ConsumeResult result = new QuerySyncStore(this).consumeInbox();
+                if (!result.consumed) return;
+                getContentResolver().notifyChange(EVENTS, null);
+                main.post(() -> {
+                    if (!alive()) return;
+                    source = LedgerStore.WECHAT;
+                    page = 1;
+                    records.clear();
+                    loadError = "";
+                    loading = true;
+                    render();
+                    loadRecords();
+                    message("微信查询结果", result.message);
+                });
+            } catch (RuntimeException error) {
+                // Detailed errors may contain private payloads; the sync screen shows safe state.
+            }
+        });
+    }
+
+    private void openQuerySync() {
+        startActivityForResult(new Intent(this, QuerySyncActivity.class), REQUEST_QUERY);
+    }
+
+    private void openBookCoach() {
+        startActivity(new Intent(this, BookCoachActivity.class).putExtra("source", source));
     }
 
     private void loadRecords() {
@@ -384,9 +418,9 @@ public final class MainActivity extends Activity {
             empty.addView(example);
             if (!isDemo()) {
                 addSpace(empty, 9);
-                Button importing = button("导入 JSON", false);
+                Button importing = button("同步微信账单 · USB", false);
                 importing.setEnabled(!busy);
-                importing.setOnClickListener(v -> startImport());
+                importing.setOnClickListener(v -> openQuerySync());
                 empty.addView(importing);
             }
             content.addView(empty);
@@ -404,14 +438,24 @@ public final class MainActivity extends Activity {
                 content.addView(label("此处显示最近 100 笔；汇总和 CSV 导出包含当前账本全部记录。", 12, MUTED, false));
             }
             addSpace(content, 15);
-            Button next = button(isDemo() ? "回到真实账本" : "继续采集 / 导入", false);
-            next.setOnClickListener(v -> { if (isDemo()) switchLedger(LedgerStore.WECHAT); else { page = 4; render(); } });
+            Button next = button(isDemo() ? "回到真实账本" : "同步微信账单 · USB", false);
+            next.setOnClickListener(v -> { if (isDemo()) switchLedger(LedgerStore.WECHAT); else openQuerySync(); });
             content.addView(next);
         }
     }
 
     private void renderHome() {
         addLedgerSwitcher();
+        LinearLayout practice = card(WHITE);
+        practice.addView(label("钱钱计划", 22, INK, true));
+        addSpace(practice, 8);
+        practice.addView(label("让钱支持你想过的生活。选一个梦想，完成一小步，记下今天做成的事。", 14, MUTED, false));
+        addSpace(practice, 14);
+        Button startPractice = button("梦想 · 分配 · 每日实践", true);
+        startPractice.setOnClickListener(v -> openBookCoach());
+        practice.addView(startPractice);
+        content.addView(practice);
+        addSpace(content, 14);
         if (isDemo()) {
             content.addView(label("以下计划与记录均为虚构，可自由试用。", 12, MUTED, false));
             addSpace(content, 12);
@@ -898,10 +942,12 @@ public final class MainActivity extends Activity {
                 + "状态：" + valueOr(transaction.status, "未提供") + "\n"
                 + ("manual".equals(transaction.provider) ? "分类：" : "支付方式：") + valueOr(transaction.paymentMethod, "未提供") + "\n"
                 + "商品 / 说明：" + valueOr(transaction.description, "未提供") + "\n"
-                + "交易单号：" + valueOr(transaction.tradeId, "未提供") + "\n\n"
+                + "交易单号：" + valueOr(transaction.tradeId, "未提供")
+                + (Transaction.QUERY_PROVIDER.equals(transaction.provider) ? "\n微信账单标识：" + transaction.queryBillId : "") + "\n\n"
                 + (transaction.reviewRequired ? "待核对：" + valueOr(transaction.reviewReason, "信息不足，暂不计入汇总。")
                 : "该记录计入收支汇总。") + "\n\n"
-                + (isDemo() ? "这是纯虚构演示记录。" : "manual".equals(transaction.provider)
+                + (isDemo() ? "这是纯虚构演示记录。" : Transaction.QUERY_PROVIDER.equals(transaction.provider)
+                ? "来源：当前微信登录账单页的接口查询。仅按微信账单标识去重，不会与手记或详情来源自动合并。请与微信核对。" : "manual".equals(transaction.provider)
                 ? "来源：你手动填写的记录。可以删除误记后重新填写。" : "来源：本机接收或手动导入的微信详情数据。请与微信原始账单核对。") ;
         TextView detail = label(body, 14, INK, false);
         detail.setTextIsSelectable(true);
@@ -911,6 +957,16 @@ public final class MainActivity extends Activity {
         scroll.addView(detail);
         AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle(valueOr(transaction.counterparty, "交易详情"))
                 .setView(scroll).setPositiveButton("知道了", null);
+        if (Transaction.QUERY_PROVIDER.equals(transaction.provider) && !isDemo()) {
+            if (transaction.reviewRequired) builder.setPositiveButton("核对后计入收支", (dialog, which) ->
+                    new AlertDialog.Builder(this).setTitle("确认这笔应计入收支？")
+                            .setMessage("请核对金额、方向及是否已从其他来源记过。转到自己的账户、充值、提现和理财申赎通常需要另行判断。\n\n确认后，这笔记录会影响生活费及收支汇总。")
+                            .setNegativeButton("再看看", null).setPositiveButton("确认计入", (confirm, action) -> changeQueryRecord(transaction, true)).show());
+            builder.setNeutralButton("删除这笔查询记录", (dialog, which) ->
+                    new AlertDialog.Builder(this).setTitle("删除本机记录？")
+                            .setMessage("只删除小账本中的这一笔，微信原账单不变。以后再次查询该账单时，它可能重新进入待核对列表。")
+                            .setNegativeButton("取消", null).setPositiveButton("删除记录", (confirm, action) -> changeQueryRecord(transaction, false)).show());
+        }
         if ("manual".equals(transaction.provider)) {
             final String selectedSource = source;
             builder.setNeutralButton("删除这笔手动记录", (dialog, which) -> new AlertDialog.Builder(this)
@@ -935,6 +991,26 @@ public final class MainActivity extends Activity {
                     }).show());
         }
         builder.show();
+    }
+
+    private void changeQueryRecord(Transaction transaction, boolean confirm) {
+        if (busy) return;
+        busy = true;
+        render();
+        io.execute(() -> {
+            boolean saved;
+            try (LedgerStore store = new LedgerStore(this)) {
+                saved = confirm ? store.confirmQuery(transaction.id) : store.deleteQuery(transaction.id);
+            } catch (RuntimeException error) { saved = false; }
+            if (saved) getContentResolver().notifyChange(EVENTS, null);
+            boolean result = saved;
+            main.post(() -> {
+                if (!alive()) return;
+                busy = false;
+                loadRecords();
+                if (!result) message("记录未更新", "这笔记录可能已被处理，或本机存储暂时无法写入。");
+            });
+        });
     }
 
     private void renderCapture() {
@@ -1078,7 +1154,17 @@ public final class MainActivity extends Activity {
         content.addView(current);
         addSpace(content, 18);
 
-        Button capture = button("微信采集 · 实验功能", false);
+        Button query = button("微信接口同步 · USB", true);
+        query.setOnClickListener(v -> openQuerySync());
+        content.addView(query);
+        addSpace(content, 10);
+        content.addView(label("普通手机通过电脑连接查询微信账单，无需 Root。查询后回到本机账本核对。", 13, MUTED, false));
+        addSpace(content, 14);
+        Button coach = button("钱钱计划 · 梦想与每日实践", false);
+        coach.setOnClickListener(v -> openBookCoach());
+        content.addView(coach);
+        addSpace(content, 14);
+        Button capture = button("旧版 Hook 实验 · 仅限 Xposed 环境", false);
         capture.setOnClickListener(v -> { page = 4; render(); });
         content.addView(capture);
         addSpace(content, 14);
@@ -1107,7 +1193,7 @@ public final class MainActivity extends Activity {
         LinearLayout data = card(WHITE);
         data.addView(label("数据与边界", 18, INK, true));
         addSpace(data, 10);
-        TextView privacy = label("• 账单仅存本机 SQLite，不联网上传。\n• 不保存密码、登录态或完整原始回调。\n• 微信查看页结构变化时，采集可能失效。\n• 同一账本按交易标识去重，并更新后续状态。\n• 演示数据不能证明手机上的微信已采集成功。", 13, MUTED, false);
+        TextView privacy = label("• 账本保存在本机；USB 同步还会经过你连接的电脑。\n• 不保存微信密码或登录票据，不联网上传。\n• 微信页面结构变化时，查询可能失效。\n• 重复接口查询不会覆盖已核对记录；不同来源仍需人工核对重复。\n• 演示记录与真实账本分开。", 13, MUTED, false);
         privacy.setLineSpacing(dp(6), 1);
         data.addView(privacy);
         addSpace(data, 15);
@@ -1118,7 +1204,7 @@ public final class MainActivity extends Activity {
         data.addView(clear);
         content.addView(data);
         addSpace(content, 17);
-        content.addView(label("Tallybook · 生活费与存钱计划 0.3.1\n采集实现参考 AutoAccounting 的微信查看页 Hook 思路。", 11, MUTED, false));
+        content.addView(label("Tallybook · 钱钱计划 0.4\n财务目标、真实行动与本机账本。", 11, MUTED, false));
     }
 
     private void switchLedger(String nextSource) {
@@ -1203,6 +1289,16 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_QUERY && resultCode == RESULT_OK) {
+            source = LedgerStore.WECHAT;
+            page = 1;
+            records.clear();
+            loadError = "";
+            loading = true;
+            render();
+            loadRecords();
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
         if (requestCode == REQUEST_IMPORT) importUri(data.getData());
         if (requestCode == REQUEST_EXPORT) exportUri(data.getData(), pendingExportSource);
@@ -1269,7 +1365,7 @@ public final class MainActivity extends Activity {
                 try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
                     if (out == null) throw new IOException("无法写入所选位置");
                     out.write(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
-                    writeCsvLine(out, "账本", "时间", "交易方", "金额(元)", "状态", "支付方式", "说明", "交易单号", "待核对", "核对原因", "记录来源", "手动分类");
+                    writeCsvLine(out, "账本", "时间", "交易方", "金额(元)", "状态", "支付方式", "说明", "交易单号", "待核对", "核对原因", "记录来源", "手动分类", "微信账单标识");
                     for (Transaction transaction : snapshot) {
                         writeCsvLine(out, LedgerStore.DEMO.equals(selectedSource) ? "演示（虚构）" : "真实",
                                 formatDate(transaction.occurredAt, "yyyy-MM-dd HH:mm:ss"),
@@ -1277,8 +1373,9 @@ public final class MainActivity extends Activity {
                                 safeSpreadsheetText(transaction.status), safeSpreadsheetText(transaction.paymentMethod),
                                 safeSpreadsheetText(transaction.description), "'" + valueOr(transaction.tradeId, ""),
                                 transaction.reviewRequired ? "是" : "否", safeSpreadsheetText(transaction.reviewReason),
-                                "manual".equals(transaction.provider) ? "手动记账" : "微信详情",
-                                "manual".equals(transaction.provider) ? safeSpreadsheetText(transaction.paymentMethod) : "");
+                                "manual".equals(transaction.provider) ? "手动记账" : Transaction.QUERY_PROVIDER.equals(transaction.provider) ? "微信接口查询" : "微信详情",
+                                "manual".equals(transaction.provider) ? safeSpreadsheetText(transaction.paymentMethod) : "",
+                                Transaction.QUERY_PROVIDER.equals(transaction.provider) ? "'" + transaction.queryBillId : "");
                     }
                 }
                 title = "CSV 已导出";
@@ -1297,7 +1394,7 @@ public final class MainActivity extends Activity {
     private void confirmClear() {
         final String selectedSource = source;
         new AlertDialog.Builder(this).setTitle("清空" + (isDemo() ? "演示" : "真实") + "账本？")
-                .setMessage("将删除此账本的全部本机记录、生活费计划和存钱目标。" + (isDemo() ? "真实账本不受影响，之后可重新加载演示数据。"
+                .setMessage("将删除此账本的全部收支记录、生活费计划和存钱目标。钱钱计划中的梦想、日记与行动会保留。" + (isDemo() ? "真实账本不受影响，之后可重新加载演示数据。"
                         : "此操作不能撤销，建议先导出 CSV。微信中的原始账单不受影响。"))
                 .setNegativeButton("取消", null)
                 .setPositiveButton("清空此账本", (dialog, which) -> {

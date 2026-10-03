@@ -15,8 +15,12 @@ final class JsonInput {
     private JsonInput(String text) { this.text = text; }
 
     static JSONObject object(String text) throws Exception {
-        if (text == null || text.length() > WechatBillParser.MAX_INPUT_BYTES
-                || text.getBytes(StandardCharsets.UTF_8).length > WechatBillParser.MAX_INPUT_BYTES) {
+        return object(text, WechatBillParser.MAX_INPUT_BYTES);
+    }
+
+    static JSONObject object(String text, int maxBytes) throws Exception {
+        if (text == null || text.length() > maxBytes
+                || text.getBytes(StandardCharsets.UTF_8).length > maxBytes) {
             throw new IllegalArgumentException("Invalid JSON length");
         }
         JsonInput validator = new JsonInput(text);

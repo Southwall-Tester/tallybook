@@ -42,6 +42,8 @@ public final class PrototypeInstrumentation extends Instrumentation {
 
     private void runChecks() throws Exception {
         Context context = getTargetContext();
+        checks += QuerySyncChecks.run(context);
+        checks += MoneyCoachChecks.run(context);
         LedgerStore store = new LedgerStore(context);
         store.clear("wechat");
         store.clear("demo");

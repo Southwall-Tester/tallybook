@@ -30,6 +30,9 @@ FIELDS = (
     "bill_id", "trans_id", "title", "timestamp", "fee", "fee_type", "fee_attr",
     "current_state", "current_state_type", "bill_type", "icon_url", "out_trade_no",
 )
+APP_ID = "dev.tallybook.app"
+REQUEST_PATH = "files/query-sync/request.json"
+PURPOSE = "wechat_query_v1"
 SETUP_HINT = (
     "未找到可用的微信账单调试页。请在指定手机的微信内打开 "
     "https://debugxweb.qq.com/?inspector=true，按微信提示允许调试，"
@@ -39,6 +42,10 @@ SETUP_HINT = (
 
 class QueryError(Exception):
     """Only fixed, non-sensitive messages may be used here."""
+
+
+class RequestRevoked(QueryError):
+    """A normal user cancellation, replacement or expiry; a watcher should continue."""
 
 
 def valid_bill_url(value):
@@ -118,6 +125,22 @@ class Adb:
             if match and match.group(2) in pids:
                 sockets.add(match.group(1))
         return sorted(sockets)[:8]
+
+    def write_private_inbox(self, payload):
+        # All command text is fixed. Bills and the nonce travel only on stdin.
+        command = ("run-as " + APP_ID + " sh -c 'umask 077; "
+                   "mkdir -p files/query-sync && cat > files/query-sync/inbox.tmp "
+                   "&& mv files/query-sync/inbox.tmp files/query-sync/inbox.json'")
+        try:
+            completed = subprocess.run(
+                [self.executable, "-s", self.serial, "shell", "-T", command],
+                input=payload, capture_output=True, timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if completed.returncode:
+                raise QueryError("无法传回手机。请使用小账本开发版并检查 USB 调试授权。")
+        except (OSError, subprocess.TimeoutExpired):
+            raise QueryError("传回手机未完成，请检查 USB 连接后重新发起查询。") from None
 
 
 class Forward:
@@ -415,17 +438,7 @@ def export_records(directory, rows, pages, stop):
             output.write(content)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="通过指定手机中已打开的微信账单页查询；不安装应用，不修改账单。")
-    parser.add_argument("--serial", required=True, help="明确选择的物理手机 ADB 序列号")
-    parser.add_argument("--pages", type=int, default=2, choices=range(1, 11), metavar="1..10",
-                        help="最多查询页数，每页 20 条，默认 2 页")
-    parser.add_argument("--output", default=str(ROOT / ".tools/wechat-query"),
-                        help="本机 JSON/CSV 输出目录；默认 .tools/wechat-query（已被 Git 忽略）")
-    args = parser.parse_args()
-    output = local_output(args.output)
-    adb = Adb(find_adb(), args.serial)
-    adb.check_phone()
+def perform_query(adb, page_limit):
     with ExitStack() as forwards:
         available = []
         for remote in adb.sockets():
@@ -436,18 +449,182 @@ def main():
         if len(available) != 1:
             raise QueryError("发现多个微信账单调试页。请只保留一个账单列表，再重试。")
         port, target = available[0]
-        value = query_cdp(ws_address(port, target), args.pages)
+        value = query_cdp(ws_address(port, target), page_limit)
         rows, pages = validate_result(value)
-        for index, page in enumerate(pages, 1):
-            print("page=%d ret_code=%d count=%d added=%d" %
-                  (index, page["ret_code"], page["count"], page["added"]))
         safe_stops = {"page_limit", "complete", "no_new_records", "repeated_cursor"}
         stop = value.get("stop")
         if stop not in safe_stops:
-            # On partial failure, do not silently turn an incomplete run into a successful export.
             raise QueryError("查询未正常完成，未导出文件。请保持账单页并重新打开后重试；不输出错误正文。")
-        export_records(output, rows, pages, stop)
-        print("已在所选本机目录保存 JSON 和 CSV；总记录数=%d。未修改微信页面列表。" % len(rows))
+        return rows, pages, stop
+
+
+def validate_request(request, now_ms=None):
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    required = {"schemaVersion", "requestId", "issuedAt", "expiresAt", "pages", "source", "purpose"}
+    if (not isinstance(request, dict) or set(request) != required
+            or type(request["schemaVersion"]) is not int or request["schemaVersion"] != 1
+            or not isinstance(request["requestId"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", request["requestId"])
+            or request["source"] != "wechat" or request["purpose"] != PURPOSE
+            or type(request["pages"]) is not int or not 1 <= request["pages"] <= 10
+            or type(request["issuedAt"]) is not int or type(request["expiresAt"]) is not int
+            or request["expiresAt"] - request["issuedAt"] != 300000
+            or request["issuedAt"] > now + 30000 or request["expiresAt"] <= now):
+        raise QueryError("手机查询请求无效或已过期，请在小账本里重新点击开始查询。")
+    return request
+
+
+def phone_now_ms(adb):
+    value = adb.run("shell", "date", "+%s")
+    if not re.fullmatch(r"[0-9]{9,12}", value):
+        raise QueryError("无法读取手机时间，未传回查询结果。")
+    return int(value) * 1000
+
+
+def read_app_request(adb):
+    raw = adb.run("exec-out", "run-as", APP_ID, "cat", REQUEST_PATH, optional=True)
+    if not raw:
+        return None
+    if len(raw.encode("utf-8")) > 4096:
+        raise QueryError("手机查询请求格式不受支持，请重新发起查询。")
+    try:
+        return validate_request(json.loads(raw), phone_now_ms(adb))
+    except (ValueError, TypeError):
+        raise QueryError("手机查询请求无效或已过期，请重新发起查询。") from None
+
+
+def make_envelope(request, rows, success=True, now_ms=None):
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    validate_request(request, now)
+    if success:
+        validate_result({"records": rows, "pages": []})
+    if len(rows) > request["pages"] * 20:
+        raise QueryError("结果条数超出手机本次授权范围，未传回手机。")
+    envelope = {"schemaVersion":1, "requestId":request["requestId"], "createdAt":now,
+                "source":"wechat", "purpose":PURPOSE, "status":"ok" if success else "query_failed",
+                "records":rows if success else []}
+    encoded = json.dumps(envelope, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    if len(encoded) > 2 * 1024 * 1024:
+        raise QueryError("结果文件过大，未传回手机。")
+    return encoded
+
+
+def deliver_to_app(adb, request, rows, success=True):
+    # Recheck after querying: cancellation/new requests revoke the old nonce.
+    try:
+        current = read_app_request(adb)
+    except QueryError:
+        raise RequestRevoked("手机授权已失效，本次结果未传回。") from None
+    if current != request:
+        raise RequestRevoked("手机已取消或更换查询，本次结果未传回。")
+    now = phone_now_ms(adb)
+    try:
+        validate_request(request, now)
+    except QueryError:
+        raise RequestRevoked("手机授权已过期，本次结果未传回。") from None
+    adb.write_private_inbox(make_envelope(request, rows, success, now_ms=now))
+    adb.run("shell", "am", "start", "-n", APP_ID + "/.MainActivity")
+
+
+def load_local_export(filename, page_limit):
+    path = local_output(filename)
+    try:
+        if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            raise ValueError()
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("format") != "wechat-bill-query-v1":
+            raise ValueError()
+        rows, pages = validate_result(value)
+        if len(rows) > page_limit * 20:
+            raise ValueError()
+        return rows, pages, value.get("stop", "page_limit")
+    except Exception:
+        raise QueryError("本地查询文件无效或超过本次授权条数，未传回手机。") from None
+
+
+def sync_app(adb, watch=False, input_json=None):
+    adb.run("exec-out", "run-as", APP_ID, "id")  # Fail early if this is not a debuggable app.
+    print("电脑已就绪。请在手机小账本点击开始查询，然后打开微信账单。")
+    handled = set()
+    waiting_message = False
+    while True:
+        success = True
+        try:
+            request = read_app_request(adb)
+        except QueryError:
+            if not watch:
+                raise
+            request = None
+        if not request or request["requestId"] in handled:
+            if not watch:
+                raise QueryError("手机没有有效查询请求，请先在小账本点击开始查询。")
+            time.sleep(2)
+            continue
+        try:
+            if input_json:
+                rows, pages, _ = load_local_export(input_json, request["pages"])
+            else:
+                rows, pages, _ = perform_query(adb, request["pages"])
+        except QueryError as error:
+            if watch and str(error) == SETUP_HINT:
+                if not waiting_message:
+                    print(SETUP_HINT)
+                    waiting_message = True
+                time.sleep(3)
+                continue
+            rows, pages, success = [], [], False
+        try:
+            deliver_to_app(adb, request, rows, success=success)
+        except RequestRevoked:
+            if not watch:
+                raise
+            handled.add(request["requestId"])
+            waiting_message = False
+            print("本次授权已取消、更新或过期，已丢弃结果；继续等待手机的新查询。")
+            continue
+        handled.add(request["requestId"])
+        if len(handled) > 64:
+            handled = {request["requestId"]}
+        waiting_message = False
+        if not success:
+            print("本次查询未完成，已向手机返回安全错误提示。")
+            if not watch:
+                return 1
+            continue
+        for index, page in enumerate(pages, 1):
+            print("page=%d ret_code=%d count=%d added=%d" %
+                  (index, page["ret_code"], page["count"], page["added"]))
+        print("已传回手机等待核对；记录数=%d。" % len(rows))
+        if not watch:
+            return 0
+        time.sleep(2)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="通过指定手机中已打开的微信账单页查询；不安装应用，不修改账单。")
+    parser.add_argument("--serial", required=True, help="明确选择的物理手机 ADB 序列号")
+    parser.add_argument("--pages", type=int, default=2, choices=range(1, 11), metavar="1..10",
+                        help="文件导出页数，每页 20 条，默认 2 页；同步到手机时以手机授权为准")
+    parser.add_argument("--output", default=str(ROOT / ".tools/wechat-query"),
+                        help="本机 JSON/CSV 输出目录；默认 .tools/wechat-query（已被 Git 忽略）")
+    sync_mode = parser.add_mutually_exclusive_group()
+    sync_mode.add_argument("--sync-app", action="store_true", help="只处理手机当前授权的一次查询并传回小账本")
+    sync_mode.add_argument("--watch-app", action="store_true", help="等待手机授权请求并传回结果，Ctrl+C 停止")
+    parser.add_argument("--input-json", help="向手机传回显式选择的既有本机导出文件；需 --sync-app 和当前授权")
+    args = parser.parse_args()
+    if args.input_json and not args.sync_app:
+        raise QueryError("--input-json 仅可与 --sync-app 一起使用，并需手机当前授权。")
+    output = local_output(args.output)
+    adb = Adb(find_adb(), args.serial)
+    adb.check_phone()
+    if args.sync_app or args.watch_app:
+        return sync_app(adb, args.watch_app, args.input_json)
+    rows, pages, stop = perform_query(adb, args.pages)
+    for index, page in enumerate(pages, 1):
+        print("page=%d ret_code=%d count=%d added=%d" %
+              (index, page["ret_code"], page["count"], page["added"]))
+    export_records(output, rows, pages, stop)
+    print("已在所选本机目录保存 JSON 和 CSV；总记录数=%d。未修改微信页面列表。" % len(rows))
     print("结束调试后，请在微信内打开 https://debugxweb.qq.com/?inspector=false。")
     return 0
 

@@ -71,6 +71,10 @@ adb -s emulator-5554 shell getprop sys.boot_completed
 
 保存与旋转的定向回归：先运行上述 `-IntegrationOnly` 重置测试数据，再运行 `python scripts/ui-refresh-smoke.py`。它在一次保存后切换屏幕方向，确认只出现一笔记录、已保存草稿不再弹出，并能删除该记录。
 
+钱钱练习的定向 UI 检查使用 `python -X utf8 scripts/book-ui-smoke.py`，在上述集成检查后运行。只操作 `tallybook_api35` 的虚构演示练习，覆盖愿望、选图取消、旋转草稿、分配、行动、准则、周复盘、正负年率试算、重启及真实/演示隔离。它与其他 UI 脚本必须串行运行；结果保存在忽略的 `artifacts/book-ui-smoke.json`。成功取消选图不代表实际图片权限持久化已验证。
+
+微信 USB 电脑助手使用 `scripts/sync-wechat.ps1` 或根目录 `微信接口同步.cmd`。只使用 `.tools/phone-target.json` 中明确选择的手机，不会自行挑选设备；手机端必须先创建五分钟查询请求。虚构协议检查运行 `python -X utf8 scripts/test_query_wechat_bills.py`，真实查询步骤和范围见 [接口研究记录](WECHAT_API_RESEARCH.md)。
+
 ```powershell
 adb -s emulator-5554 emu avd name
 # 仅在上一条确认名称为 tallybook_api35 时执行。

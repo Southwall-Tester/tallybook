@@ -15,6 +15,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".BookCoachActivity" android:exported="false" />
+        <activity android:name=".QuerySyncActivity" android:exported="false" />
         <!-- Reads are denied. Every call checks Binder's UID against installed WeChat. -->
         <provider android:name=".capture.CaptureProvider"
             android:authorities="dev.tallybook.app.capture"

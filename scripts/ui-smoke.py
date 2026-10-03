@@ -153,7 +153,7 @@ def main():
     tap('真实账本')
     find('0 笔')
     tap('设置')
-    tap('微信采集 · 实验功能', scroll=True)
+    tap('旧版 Hook 实验 · 仅限 Xposed 环境', scroll=True)
     tap('开启 30 分钟采集')
     find('开启查看页采集？')
     tap('开启 30 分钟')
