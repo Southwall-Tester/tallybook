@@ -110,6 +110,16 @@ python scripts/query-wechat-bills.py --serial PHONE_SERIAL --sync-app --input-js
 
 ## 已验证的浏览器调试入口与后续检查
 
+### 手机独立查询的实测进展
+
+0.4.0 的查询引擎仍运行在电脑脚本中，手机 APK 只创建请求和消费结果。用户报告一直等待时，现场没有运行中的 Python 查询助手；手机显示的统一等待文字无法区分助手未响应、等待账单页与实际查询阶段。本次启动一次 USB 同步后未收到成功查询结果，只返回了安全失败状态，不能声称手机入库成功。
+
+为判断能否移到手机，另编译了一个仅用于发现的 Java 探针：通过 Android `LocalSocket` 连接显式指定的微信 ABSTRACT 调试 socket，只计划请求 `/json/list`，不执行 JavaScript 或读取账单。在同一 vivo S30 上由 ADB 启动手机本地 `app_process`，实际结果为 `phase=connect kind=PermissionDenied exception=IOException`，即在建立连接阶段被拒绝。探针执行结束，手机上的临时 DEX 已删除，电脑临时转发亦已清理。
+
+这个结果仅说明本次本地 shell 进程不能直接连接，不能推出所有手机端方案都不可能，也不能把 Shizuku 的一般 ADB 权限能力当成已打通微信。[Shizuku 官方说明](https://shizuku.rikka.app/zh-hans/guide/setup/)支持 Android 11 以上使用无线调试启动，但本项目尚未接入或实测 Shizuku。
+
+下一候选是 APK 内的 ADB 客户端，经用户开启无线调试并配对后连接本机，再由设备的 ADB 服务访问调试入口，而非 shell 服务直接连接。可参考 [LADB](https://github.com/tytydraco/LADB) 的本机连接能力和 [libadb-android](https://github.com/MuntashirAkon/libadb-android) 的配对/连接 API。现有项目只证明这种连接机制存在，不证明本项目的微信查询已经可用。当前手机无线调试未启用；本次没有自动开启该设置、安装额外权限工具或更改安全策略。
+
 APK 静态代码注册了 `https://debugxweb.qq.com/?inspector=true`，参数别名为 `enable_remote_debug`：
 
 ```text
