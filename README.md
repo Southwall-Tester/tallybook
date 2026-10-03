@@ -43,6 +43,17 @@ Windows 中双击项目根目录的 **`预览小账本.cmd`**，即可打开安�
 
 ## 手机安装
 
+开发时可以直接用 USB 连接手机，由电脑构建、覆盖更新并启动，不用手动传 APK。开启手机的「开发者选项 → USB 调试」并允许此电脑后，首次选择目标：
+
+```powershell
+.\scripts\run-device.ps1 -List
+.\scripts\run-device.ps1 -Serial 手机的设备序列号 -Remember
+```
+
+之后双击 **`手机运行小账本.cmd`** 即可更新运行。需要保存源码后自动更新，可执行 `scripts/run-device.ps1 -Watch`；它锁定已选择的手机，源码稳定后重新构建、覆盖安装并重启小账本，按 Ctrl+C 结束。
+
+目标只保存在被 Git 忽略的 `.tools/phone-target.json`。脚本不会自动挑设备，也不会停止副屏服务、卸载旧应用或清空数据。平板用作副屏时，只指定实验手机的序列号。详细连接步骤和热更新边界见 [真机开发说明](docs/DEVELOPMENT.md#真机开发)。
+
 支持 Android 8.0 及以上。运行 `scripts/build.ps1` 后，安装 `artifacts/tallybook-0.2.0-debug.apk`。历史版本会保留。也可从 [GitHub Actions](https://github.com/Southwall-Tester/tallybook/actions) 的成功构建下载 APK artifact。
 
 本地和 CI 使用各自环境的调试签名，不能保证相互覆盖安装；需要替换签名时，先导出所需记录。
@@ -73,6 +84,6 @@ Windows 中双击项目根目录的 **`预览小账本.cmd`**，即可打开安�
 
 - `core/`：交易解析、预算和目标计算及单元测试。
 - `app/`：原生界面、本机 SQLite、计划存储与实验采集模块。
-- `scripts/`：工具准备、构建、电脑预览、模拟器验证。
+- `scripts/`：工具准备、构建、电脑预览、真机开发、模拟器验证。
 
 按 GPL-3.0 发布，代码来源与依赖见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

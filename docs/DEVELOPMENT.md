@@ -24,6 +24,33 @@ bash ./gradlew :core:test :app:assembleDebug :app:lintDebug --console=plain --no
 
 Windows 直接调用 wrapper 前，可运行 `. .\.tools\env.ps1`，再用 ` .\gradlew.bat` 替代上面的 `bash ./gradlew`。不要把本机 SDK 的绝对路径写进提交。
 
+## 真机开发
+
+普通 Android 8.0 及以上手机即可通过 USB 开发，不需要 Root。首次在实验手机上开启「开发者选项 → USB 调试」，使用支持数据传输的线连接电脑，解锁手机并允许此电脑的调试授权。具体设置入口因品牌不同而异，参见 [Android 真机运行说明](https://developer.android.com/studio/run/device)。
+
+```powershell
+# 只列出 ADB 设备，不安装应用。
+.\scripts\run-device.ps1 -List
+
+# 将 PHONE_SERIAL 替换为已确认的实验手机序列号。
+# 检查设备并记住选择，暂不安装；序列号只保存在 .tools/phone-target.json。
+.\scripts\run-device.ps1 -Serial PHONE_SERIAL -Check -Remember
+
+# 增量构建、覆盖安装并启动；也可双击根目录「手机运行小账本.cmd」。
+.\scripts\run-device.ps1
+
+# 可选：保存源码后自动构建、更新并重启小账本；Ctrl+C 结束。
+.\scripts\run-device.ps1 -Watch
+```
+
+脚本要求显式选择或已记住的设备，全程固定序列号，不会自动选择其他设备。它拒绝模拟器和识别为平板、电视、手表、车载系统的设备；设备类型依赖厂商报告，首次仍须确认选中的是实验手机。设备断开或调试授权失效时停止。副屏平板保持原样，脚本不操作 spacedesk、驱动或 ADB server。
+
+`-Watch` 监控应用和核心模块的主源码、资源与构建配置，文件稳定后才构建。构建失败不会部署旧 APK，修改源码并保存后可重试；安装失败不会卸载应用或清空数据。正常更新使用 `adb install -r`，兼容签名下保留应用数据；启动会重启小账本，编辑中的未保存内容可能丢失。
+
+这条流程省去手动打包、传文件和点安装，但内部仍会构建、覆盖安装 APK 并重启应用。若使用 Android Studio，可通过 [Apply Changes](https://developer.android.com/studio/run#apply-changes) 应用部分方法体和资源改动；需要 debug 构建和 Android 8.0 及以上，清单、字段、方法签名等变动仍可能需要完整 Run。当前项目采用原生 Java UI，脚本没有通用热重载能力。
+
+若列表为空，先确认实验手机上的 USB 调试、数据线和连接模式；若显示 `unauthorized`，在手机上接受调试授权。多个安卓设备同时连接时不要按列表顺序猜测。Windows 的厂商驱动问题需按手机型号单独排查，不要为调试手机停用正在使用的副屏平板。
+
 ## 模拟器验证
 
 电脑交互预览直接双击根目录 `预览小账本.cmd`，或运行 `scripts/preview.ps1`。它打开可见的 `tallybook_preview`（端口 5556），保留试用数据。修改代码后使用 `scripts/preview.ps1 -Rebuild` 更新 APK。
