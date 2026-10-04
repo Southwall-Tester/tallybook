@@ -7,8 +7,8 @@ android {
         applicationId 'dev.tallybook.app'
         minSdk 26
         targetSdk 35
-        versionCode 5
-        versionName '0.4.0-prototype'
+        versionCode 6
+        versionName '0.5.0-prototype'
         testInstrumentationRunner 'dev.tallybook.app.PrototypeInstrumentation'
     }
     compileOptions {
@@ -22,6 +22,5 @@ android {
 
 dependencies {
     implementation(project(':core')) { exclude group: 'org.json', module: 'json' }
-    compileOnly 'de.robv.android.xposed:api:82'
     testImplementation 'junit:junit:4.13.2'
 }

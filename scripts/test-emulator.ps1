@@ -17,13 +17,6 @@ $output | ForEach-Object { Write-Output $_ }
 New-Item -ItemType Directory -Force -Path '.\artifacts' | Out-Null
 $output | Set-Content -LiteralPath '.\artifacts\instrumentation.txt' -Encoding UTF8
 if (!(($output | Out-String) -match 'TALLYBOOK_SMOKE_OK checks=\d+') -or (($output | Out-String) -match 'TALLYBOOK_SMOKE_FAILED')) { throw 'Android integration checks failed.' }
-$savedErrorPreference = $ErrorActionPreference
-try {
-    $ErrorActionPreference = 'Continue' # Native stderr is the expected rejection in this check.
-    $denied = & adb -s $serial shell content call --uri content://dev.tallybook.app.capture --method state 2>&1
-} finally { $ErrorActionPreference = $savedErrorPreference }
-if (!(($denied | Out-String) -match 'Caller not permitted')) { throw 'External UID was not rejected.' }
-'Shell UID denied by CaptureProvider guard.' | Set-Content -LiteralPath '.\artifacts\provider-access-check.txt' -Encoding UTF8
 if ($IntegrationOnly) { return }
 $env:PYTHONIOENCODING = 'utf-8'
 & python -u '.\scripts\ui-smoke.py'

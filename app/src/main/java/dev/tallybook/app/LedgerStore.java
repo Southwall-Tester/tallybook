@@ -17,7 +17,7 @@ public final class LedgerStore extends SQLiteOpenHelper {
     public static final String DEMO = "demo";
 
     public LedgerStore(Context context) {
-        super(context.getApplicationContext(), "tallybook.db", null, 1);
+        super(context.getApplicationContext(), "tallybook.db", null, 2);
         setWriteAheadLoggingEnabled(true);
     }
 
@@ -26,10 +26,15 @@ public final class LedgerStore extends SQLiteOpenHelper {
                 + "payload TEXT NOT NULL, occurred_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, "
                 + "PRIMARY KEY(source, transaction_id))");
         db.execSQL("CREATE INDEX transactions_time ON transactions(source, occurred_at DESC)");
+        createFinanceTable(db);
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        throw new IllegalStateException("Database migration required");
+        if (oldVersion < 2) createFinanceTable(db);
+    }
+
+    private static void createFinanceTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE finance_states (source TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL)");
     }
 
     /** Returns true only when a new ID is inserted; repeats update its latest known state. */
@@ -38,6 +43,8 @@ public final class LedgerStore extends SQLiteOpenHelper {
         if (transaction == null) throw new IllegalArgumentException("缺少交易记录");
         if (Transaction.QUERY_PROVIDER.equals(transaction.provider))
             throw new IllegalArgumentException("接口查询记录须通过专用入口保存");
+        if (transaction.tradeId.startsWith("finance_flow_"))
+            throw new IllegalArgumentException("项目流水请在收入项目中修改");
         ContentValues values = new ContentValues();
         values.put("source", source);
         values.put("transaction_id", transaction.id);
@@ -47,6 +54,7 @@ public final class LedgerStore extends SQLiteOpenHelper {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
+            MoneyFinanceStore.requireLedgerMutationAllowed(db, source, transaction.id);
             int updated = db.update("transactions", values,
                     "source = ? AND transaction_id = ?", new String[]{source, transaction.id});
             if (updated == 0) db.insertOrThrow("transactions", null, values);
@@ -101,6 +109,7 @@ public final class LedgerStore extends SQLiteOpenHelper {
             }
             boolean changed;
             if (delete) {
+                MoneyFinanceStore.requireLedgerMutationAllowed(db, WECHAT, id);
                 changed = db.delete("transactions", "source = ? AND transaction_id = ?",
                         new String[]{WECHAT, id}) == 1;
             } else {
@@ -118,7 +127,15 @@ public final class LedgerStore extends SQLiteOpenHelper {
 
     public void clear(String source) {
         requireSource(source);
-        getWritableDatabase().delete("transactions", "source = ?", new String[]{source});
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            dev.tallybook.core.MoneyFinance.State state = MoneyFinanceStore.readState(db, source);
+            if (!state.flows.isEmpty() || state.entries.stream().anyMatch(entry -> !entry.transactionId.isEmpty()))
+                throw new IllegalArgumentException("账本仍有钱罐或项目关联，请先在资金练习中撤销关联；清空不会删除练习记录");
+            db.delete("transactions", "source = ?", new String[]{source});
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
     }
 
     /** Removes only a manually entered record, in exactly the selected ledger. */
@@ -132,6 +149,7 @@ public final class LedgerStore extends SQLiteOpenHelper {
                 if (!cursor.moveToFirst()) return false;
                 if (!"manual".equals(Transaction.fromJson(cursor.getString(0)).provider)) return false;
             }
+            MoneyFinanceStore.requireLedgerMutationAllowed(db, source, id);
             boolean deleted = db.delete("transactions", "source = ? AND transaction_id = ?",
                     new String[]{source, id}) == 1;
             db.setTransactionSuccessful();

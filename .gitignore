@@ -5,6 +5,7 @@ local.properties
 *.iml
 .idea/
 captures/
+artifacts/
 *.keystore
 *.jks
 artifacts/*.apk

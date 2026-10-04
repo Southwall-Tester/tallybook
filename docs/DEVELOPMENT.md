@@ -65,15 +65,17 @@ adb -s emulator-5554 shell getprop sys.boot_completed
 .\scripts\test-emulator.ps1
 ```
 
-测试脚本校验 AVD 名称 `tallybook_api35`，只在该模拟器重置测试账本，使用虚构数据检查真实/演示隔离、交易处理、采集权限以及界面和 CSV 导出。UI 检查还需要 Python 3。完成后可释放模拟器资源：
+测试脚本校验 AVD 名称 `tallybook_api35`，只在该模拟器重置测试账本，使用虚构数据检查真实/演示隔离、交易处理、资金关联与迁移、已撤下组件以及界面和 CSV 导出。UI 检查还需要 Python 3。完成后可释放模拟器资源：
 
-若仅改动 Android 集成逻辑，可用 `scripts/test-emulator.ps1 -IntegrationOnly` 只运行集成和调用权限检查；完整界面流程仍使用默认命令。预览设备与测试设备相互隔离。
+若仅改动 Android 集成逻辑，可用 `scripts/test-emulator.ps1 -IntegrationOnly` 只运行集成检查；完整界面流程仍使用默认命令。预览设备与测试设备相互隔离。
 
 保存与旋转的定向回归：先运行上述 `-IntegrationOnly` 重置测试数据，再运行 `python scripts/ui-refresh-smoke.py`。它在一次保存后切换屏幕方向，确认只出现一笔记录、已保存草稿不再弹出，并能删除该记录。
 
-钱钱练习的定向 UI 检查使用 `python -X utf8 scripts/book-ui-smoke.py`，在上述集成检查后运行。只操作 `tallybook_api35` 的虚构演示练习，覆盖愿望、选图取消、旋转草稿、分配、行动、准则、周复盘、正负年率试算、重启及真实/演示隔离。它与其他 UI 脚本必须串行运行；结果保存在忽略的 `artifacts/book-ui-smoke.json`。成功取消选图不代表实际图片权限持久化已验证。
+钱钱练习的定向 UI 检查使用 `python -X utf8 scripts/book-ui-smoke.py`，资金练习使用 `python -X utf8 scripts/finance-ui-smoke.py`。在集成检查与基础 UI 检查后依次运行；二者只操作 `tallybook_api35` 中的虚构记录，不能并行控制同一设备。结果保存到忽略的 `artifacts/`。书中流程覆盖愿望、图片、草稿、日记、行动、准则、复盘与学习计算；资金流程覆盖项目实际收支、预期不入账、钱罐分钱/核销/撤销约束、资产债务和来源隔离。实际运行范围以 [验证记录](VALIDATION.md) 为准。
 
-微信 USB 电脑助手使用 `scripts/sync-wechat.ps1` 或根目录 `微信接口同步.cmd`。只使用 `.tools/phone-target.json` 中明确选择的手机，不会自行挑选设备；手机端必须先创建五分钟查询请求。虚构协议检查运行 `python -X utf8 scripts/test_query_wechat_bills.py`，真实查询步骤和范围见 [接口研究记录](WECHAT_API_RESEARCH.md)。
+随后可运行 `python -X utf8 scripts/book-image-ui-smoke.py`：生成并选择一张合成图片，检查保存与重启后的缩略图，再把原目标复制到完全空的愿望位置。它保留其他愿望和资金记录，不选择私人图片；遇到未适配的系统文件选择器时保存实际 UI 树并停止。
+
+0.5.0 撤下微信直接查询与 Hook。旧 USB 助手、私有请求协议和工具测试保存在 `wechat-query-v0.4.0` 标签；历史研究见 [接口研究记录](WECHAT_API_RESEARCH.md)。当前版本不提供这条运行入口。
 
 ```powershell
 adb -s emulator-5554 emu avd name
@@ -81,7 +83,7 @@ adb -s emulator-5554 emu avd name
 adb -s emulator-5554 emu kill
 ```
 
-模拟器、解析样例和 CI 不能证明当前微信版本或真实手机采集可用。实际结果记录在 [VALIDATION.md](VALIDATION.md)，没有运行过的检查标记为未验证。
+模拟器、解析样例和 CI 不代表已经在用户手机逐项验证，也不证明任何财务或学习效果。实际结果记录在 [VALIDATION.md](VALIDATION.md)，没有运行过的检查标记为未验证。
 
 ## 提交与分支
 

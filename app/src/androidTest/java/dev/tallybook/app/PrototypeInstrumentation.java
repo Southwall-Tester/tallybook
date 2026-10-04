@@ -5,7 +5,7 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
-import android.net.Uri;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import dev.tallybook.core.ParseResult;
@@ -42,12 +42,11 @@ public final class PrototypeInstrumentation extends Instrumentation {
 
     private void runChecks() throws Exception {
         Context context = getTargetContext();
-        checks += QuerySyncChecks.run(context);
+        checks += MoneyFinanceChecks.run(context);
         checks += MoneyCoachChecks.run(context);
         LedgerStore store = new LedgerStore(context);
         store.clear("wechat");
         store.clear("demo");
-        CaptureSettings.disable(context);
         String fixture;
         try (InputStream input = context.getAssets().open("demo-wechat.json")) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -69,25 +68,7 @@ public final class PrototypeInstrumentation extends Instrumentation {
         check(!store.insert(refund, "demo"), "Status update replaces existing ID");
         check(store.list("demo").get(0).reviewRequired, "Refund update is excluded from confirmed summary");
 
-        Uri bridge = Uri.parse("content://dev.tallybook.app.capture");
-        Bundle payload = new Bundle();
-        payload.putString("transaction", tx.toJson());
-        Bundle off = context.getContentResolver().call(bridge, "record", null, payload);
-        check(off != null && !off.getBoolean("accepted") && store.list("wechat").isEmpty(), "Capture off refuses incoming transactions");
-        CaptureSettings.enableFor30Minutes(context);
-        long now = System.currentTimeMillis();
-        check(CaptureSettings.enabledUntil(context) > now && CaptureSettings.enabledUntil(context) <= now + 1800000,
-            "Capture window expires within 30 minutes");
-        Bundle saved = context.getContentResolver().call(bridge, "record", null, payload);
-        check(saved != null && saved.getBoolean("accepted") && store.list("wechat").size() == 1, "Enabled provider accepts a validated transaction");
-        Bundle duplicate = context.getContentResolver().call(bridge, "record", null, payload);
-        check(duplicate != null && duplicate.getBoolean("accepted") && !duplicate.getBoolean("inserted")
-            && store.list("wechat").size() == 1, "Provider handles a repeated callback without a second entry");
-        Bundle invalid = new Bundle();
-        invalid.putString("transaction", "{\"amountMinor\":-1}");
-        Bundle rejected = context.getContentResolver().call(bridge, "record", null, invalid);
-        check(rejected != null && !rejected.getBoolean("accepted") && store.list("wechat").size() == 1,
-            "Provider rejects incomplete normalized records");
+        check(store.insert(tx, "wechat"), "Imported record can remain in real ledger without a query runtime");
         Transaction manual = Transaction.manual("manual-integration-1", "测试午餐", "餐饮", "虚构测试",
             -2500L, tx.occurredAt);
         check("manual".equals(Transaction.fromJson(manual.toJson()).provider), "Manual JSON preserves its provider on Android");
@@ -96,15 +77,13 @@ public final class PrototypeInstrumentation extends Instrumentation {
             && store.list("demo").size() == 2, "Deleting a manual entry leaves the other ledger intact");
         check(!store.deleteManual(tx.id, "wechat") && store.list("wechat").size() == 1,
             "Manual deletion cannot remove an imported WeChat transaction");
-        Bundle manualPayload = new Bundle();
-        manualPayload.putString("transaction", manual.toJson());
-        Bundle manualRejected = context.getContentResolver().call(bridge, "record", null, manualPayload);
-        check(manualRejected != null && !manualRejected.getBoolean("accepted") && store.list("wechat").size() == 1,
-            "WeChat capture bridge rejects manual-provider payloads");
-        boolean denied = false;
-        try { context.getContentResolver().query(bridge, null, null, null, null); }
-        catch (SecurityException expected) { denied = true; }
-        check(denied, "Exported bridge cannot read the private ledger");
+        check(context.getPackageManager().resolveContentProvider("dev.tallybook.app.capture", 0) == null,
+            "Retired capture provider is absent");
+        boolean queryAbsent = false;
+        try { context.getPackageManager().getActivityInfo(new android.content.ComponentName(context,
+                "dev.tallybook.app.QuerySyncActivity"), 0); }
+        catch (PackageManager.NameNotFoundException expected) { queryAbsent = true; }
+        check(queryAbsent, "Retired query activity is absent");
         PackageInfo info = context.getPackageManager().getPackageInfo(context.getPackageName(), 4096);
         boolean hasInternet = false;
         if (info.requestedPermissions != null) for (String permission : info.requestedPermissions) {
@@ -132,12 +111,9 @@ public final class PrototypeInstrumentation extends Instrumentation {
         check(demoPlans.loadGoal() == null && realPlans.loadGoal().savedMinor == 25000,
             "Clearing demo planning leaves real savings unchanged");
         realPlans.clear();
-        CaptureSettings.disable(context);
         store.clear("wechat");
         store.clear("demo");
         store.close();
-        context.getSharedPreferences("capture_settings", Context.MODE_PRIVATE).edit().clear().commit();
-        context.getSharedPreferences("capture_diagnostics", Context.MODE_PRIVATE).edit().clear().commit();
         Intent launch = new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         Activity activity = startActivitySync(launch);
         waitForIdleSync();

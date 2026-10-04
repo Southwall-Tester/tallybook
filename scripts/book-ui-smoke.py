@@ -39,9 +39,10 @@ def dimensions():
 
 def swipe(up=True):
     width, height = dimensions()
-    start, end = (0.78, 0.38) if up else (0.36, 0.82)
+    # Keep overlapping viewports: a fast fling can skip a short input entirely.
+    start, end = (0.70, 0.48) if up else (0.36, 0.82)
     adb('shell', 'input', 'swipe', str(width // 2), str(int(height * start)),
-        str(width // 2), str(int(height * end)), '220')
+        str(width // 2), str(int(height * end)), '600' if up else '220')
 
 
 def find(text=None, desc=None, klass=None, timeout=18, scroll=False):
@@ -71,7 +72,8 @@ def tap(text=None, desc=None, scroll=False, klass=None):
 
 def fill(desc, value):
     node = find(desc=desc, scroll=True)
-    tap(desc=desc)
+    x1, y1, x2, y2 = map(int, re.findall(r'\d+', node.attrib['bounds']))
+    adb('shell', 'input', 'tap', str((x1 + x2) // 2), str((y1 + y2) // 2))
     adb('shell', 'input', 'keyevent', '123')
     old = node.attrib.get('text', '')
     if old:
@@ -84,8 +86,13 @@ def fill(desc, value):
 
 
 def top():
+    previous = None
     for _ in range(12):
         tree = dump()
+        current = ET.tostring(tree)
+        if current == previous:
+            break
+        previous = current
         if any(n.attrib.get('class') == 'android.widget.ScrollView'
                and n.attrib.get('scrollable') == 'true' for n in tree.iter('node')):
             swipe(False)
@@ -125,9 +132,41 @@ def start_coach(kind):
     adb('shell', 'am', 'force-stop', PACKAGE)
     adb('shell', 'am', 'start', '-n', PACKAGE + '/.MainActivity')
     tap(text=kind + '账本')
-    tap(text='梦想 · 分配 · 每日实践', scroll=True)
+    tap(text='成长')
+    tap(text='书中方法 · 练习指南', scroll=True)
     find(text='钱钱练习 · ' + ('演示' if kind == '演示' else '真实账本'))
-    find(text='为想要的生活做一点')
+    find(text='把方法用到自己的生活里')
+
+
+def monthly_state(source):
+    path = f'shared_prefs/monthly_review_{source}.xml'
+    listing = adb('shell', 'run-as', PACKAGE, 'ls', 'shared_prefs')
+    if f'monthly_review_{source}.xml' not in listing:
+        return []
+    xml = ET.fromstring(adb('exec-out', 'run-as', PACKAGE, 'cat', path))
+    entry = xml.find("./string[@name='state']")
+    return [] if entry is None else json.loads(entry.text)['records']
+
+
+def wait_month(predicate, source='demo', timeout=18):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = monthly_state(source)
+        if predicate(current):
+            return current
+        time.sleep(0.25)
+    raise AssertionError('Monthly synthetic state did not match expectation')
+
+
+def visible_contains(*parts):
+    values = [n.attrib.get('text', '') for n in dump().iter('node')]
+    assert any(all(part in value for part in parts) for value in values), parts
+
+
+def experiment(label):
+    top()
+    tap(desc='选择学习实验')
+    tap(text=label, scroll=True)
 
 
 def main():
@@ -140,6 +179,7 @@ def main():
     try:
         start_coach('真实')
         real_before = state('wechat')
+        real_month_before = monthly_state('wechat')
         start_coach('演示')
         old_demo = state('demo')
         assert old_demo['wishes'][0]['title'] in ('', TITLE), 'Protect an existing non-test wish'
@@ -159,6 +199,7 @@ def main():
         tap(text='保存这个愿望')
         wait_state(lambda s: s['wishes'][0]['title'] == TITLE and s['wishes'][0]['savedMinor'] == 25000 and s['wishes'][0]['priority'])
         checks.append('wish_save_and_image_picker_cancel_preserve_form')
+        print('book-ui-smoke: ' + str('wish_save_and_image_picker_cancel_preserve_form'), flush=True)
 
         page('成功日记')
         fill('记录日期', FIXTURE_DAY.isoformat())
@@ -174,8 +215,9 @@ def main():
         tap(text='保存日记 / 草稿', scroll=True)
         wait_state(lambda s: any(e['date'] == FIXTURE_DAY.isoformat() and len(e['items']) == 2 for e in s['successes']))
         checks.append('success_two_items_saved_and_rotation_draft')
+        print('book-ui-smoke: ' + str('success_two_items_saved_and_rotation_draft'), flush=True)
 
-        page('三用途分配')
+        page('分配历史演算')
         fill('这次可分配金额（元）', '74')
         fill('长期积累（%）', '50')
         fill('梦想（%）', '40')
@@ -189,6 +231,7 @@ def main():
         tap(text='确认')
         wait_state(lambda s: any(r['note'] == 'UI-book-allocation' and r['executedAt'] > 0 for r in s['allocations']))
         checks.append('allocation_7400_to_3700_2960_740_plan_then_executed')
+        print('book-ui-smoke: ' + str('allocation_7400_to_3700_2960_740_plan_then_executed'), flush=True)
 
         page('72 小时行动')
         fill('准备完成什么', 'UI-book-request-feedback')
@@ -198,6 +241,7 @@ def main():
         tap(text='记录为已完成', scroll=True)
         wait_state(lambda s: any(a['title'] == 'UI-book-request-feedback' and a['completedAt'] > 0 for a in s['actions']))
         checks.append('action_saved_then_completed_with_result')
+        print('book-ui-smoke: ' + str('action_saved_then_completed_with_result'), flush=True)
 
         page('每日准则')
         fill('练习日期', FIXTURE_DAY.isoformat())
@@ -207,6 +251,7 @@ def main():
         tap(text='保存理解与经历', scroll=True)
         wait_state(lambda s: any(p['date'] == FIXTURE_DAY.isoformat() and p['themeIndex'] == FIXTURE_DAY.weekday() for p in s['practices']))
         checks.append('practice_weekday_and_experience')
+        print('book-ui-smoke: ' + str('practice_weekday_and_experience'), flush=True)
 
         page('每周复盘')
         fill('选择这一周中的任意日期', '2100-01-01')
@@ -224,6 +269,30 @@ def main():
         monday = (FIXTURE_DAY - timedelta(days=FIXTURE_DAY.weekday())).isoformat()
         wait_state(lambda s: any(r['weekStart'] == monday and r['nextStep'] == 'Choose one smaller action' for r in s['reviews']))
         checks.append('weekly_review_and_out_of_range_date_navigation')
+        print('book-ui-smoke: ' + str('weekly_review_and_out_of_range_date_navigation'), flush=True)
+
+        tap(text='把下一步带到行动草稿', scroll=True)
+        assert find(desc='准备完成什么').attrib.get('text') == 'Choose one smaller action'
+        assert not any(a['title'] == 'Choose one smaller action' and a['completedAt'] == 0 for a in state('demo')['actions'])
+        checks.append('weekly_next_step_opens_unsaved_action_draft')
+        print('book-ui-smoke: ' + str('weekly_next_step_opens_unsaved_action_draft'), flush=True)
+
+        page('月度回顾')
+        fill('回顾月份', '2037-02')
+        tap(text='打开这个月', scroll=True)
+        fill('1. 钱、梦想与生活发生了什么变化？', 'UI-month-verified-facts')
+        fill('2. 哪种做法有效，我学到了什么？', 'Compare received money with expectations')
+        fill('3. 下个月想保留或调整什么？', 'Ask one focused question')
+        tap(text='保存这个月的回顾', scroll=True)
+        wait_month(lambda records: any(r['month'] == '2037-02' and r['facts'] == 'UI-month-verified-facts' for r in records))
+        tap(text='把月度下一步带到行动草稿', scroll=True)
+        assert find(desc='准备完成什么').attrib.get('text') == 'Ask one focused question'
+        page('月度回顾')
+        tap(text='删除 2037-02 回顾', scroll=True)
+        tap(text='确认')
+        wait_month(lambda records: not any(r['month'] == '2037-02' for r in records))
+        checks.append('monthly_save_prefill_delete')
+        print('book-ui-smoke: ' + str('monthly_save_prefill_delete'), flush=True)
 
         page('学习试算')
         fill('假设本金（元）', '3000')
@@ -237,17 +306,49 @@ def main():
         assert any('2707.50' in n.attrib.get('text', '') and '不适用' in n.attrib.get('text', '') for n in dump().iter('node'))
         screenshot('book-learning-negative.png')
         checks.append('compound_positive_negative_and_72_boundary')
+        print('book-ui-smoke: ' + str('compound_positive_negative_and_72_boundary'), flush=True)
+
+        top()
+        fill('假设年变化率（%，可为负）', '0')
+        fill('年数（0—100 的整数）', '1')
+        fill('每期末追加（元，可留空）', '100')
+        tap(desc='选择追加频率', scroll=True)
+        tap(text='每月末追加')
+        fill('假设年通胀率（%，可为负）', '5')
+        tap(text='计算这个假设', scroll=True)
+        visible_contains('4200.00', '4000.00', '每月末追加')
+        checks.append('monthly_addition_and_inflation_purchasing_power')
+        print('book-ui-smoke: ' + str('monthly_addition_and_inflation_purchasing_power'), flush=True)
+
+        experiment('集中、分散与共同下跌')
+        fill('假设总金额（元）', '20000')
+        tap(text='比较三个场景', scroll=True)
+        visible_contains('19600.00', '12000.00', '共同下跌')
+        checks.append('twenty_holdings_single_and_common_decline')
+        print('book-ui-smoke: ' + str('twenty_holdings_single_and_common_decline'), flush=True)
+
+        experiment('消费债务余款示例')
+        fill('假设已到账金额（元）', '100')
+        fill('假设必要开支（元）', '90')
+        fill('假设合同要求本期支付（元）', '20')
+        tap(text='观察余款示例', scroll=True)
+        visible_contains('缺口', '10.00', '没有可供平分的余款')
+        checks.append('debt_remainder_respects_obligations_and_shortfall')
+        print('book-ui-smoke: ' + str('debt_remainder_respects_obligations_and_shortfall'), flush=True)
 
         page('方法库')
         find(text='钱对我的意义')
         screenshot('book-method-library.png')
         assert state('wechat') == real_before, 'Demo exercises must not write real practice data'
+        assert monthly_state('wechat') == real_month_before, 'Demo monthly reviews must not write real reviews'
         checks.append('real_demo_practice_isolation')
+        print('book-ui-smoke: ' + str('real_demo_practice_isolation'), flush=True)
         start_coach('演示')
         page('愿望与梦想')
         assert find(desc='愿望').attrib.get('text') == TITLE
         screenshot('book-dream.png')
         checks.append('restart_persistence')
+        print('book-ui-smoke: ' + str('restart_persistence'), flush=True)
 
         result = {'passed': True, 'checks': checks, 'device': SERIAL, 'avd': 'tallybook_api35',
                   'fictional_data': True, 'image_picker_cancel': True,

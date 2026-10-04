@@ -8,16 +8,13 @@
 - Reference file: `app/src/main/java/net/ankio/auto/xposed/hooks/wechat/hooks/WebViewHooker.kt`.
 - Inspected file revision: https://github.com/AutoAccountingOrg/AutoAccounting/blob/512efd515df61f86ca030796d6b7fe6f221ec56f/app/src/main/java/net/ankio/auto/xposed/hooks/wechat/hooks/WebViewHooker.kt
 
-This prototype follows that file's interception point (`com.tencent.xweb.WebView.evaluateJavascript`) and envelope (`__json_message.__params`, `nativeWXPayCgiTunnel:ok`, `respbuf`). The Java collector and conservative parser were implemented for this prototype. The long upstream example containing account identifiers and signed navigation data was not copied. All bundled transaction fixtures are newly created, clearly fictional samples.
+The retained file-import parser follows that file's envelope (`__json_message.__params`, `nativeWXPayCgiTunnel:ok`, `respbuf`). The former Java collector used its interception point (`com.tencent.xweb.WebView.evaluateJavascript`); it was removed from the current app in 0.5.0 and remains in the historical `wechat-query-v0.4.0` tag. The collector and conservative parser were implemented for this prototype. The long upstream example containing account identifiers and signed navigation data was not copied. All bundled transaction fixtures are newly created, clearly fictional samples.
 
 The source file's header says “Apache License, Version 3.0”, while the project root provides GPL-3.0. This prototype is distributed under the project-level GPL-3.0 rather than relying on that inconsistent file-header designation. Redistribution of an APK should include access to this corresponding source and its license.
 
-## Xposed API
+## Historical Xposed API dependency
 
-- https://github.com/rovo89/XposedBridge
-- https://api.xposed.info/
-- Artifact: `de.robv.android.xposed:api:82`, Apache-2.0.
-- Compile-only API; these classes are supplied by the module runtime and are not bundled in the APK.
+The archived query/Hook version used `de.robv.android.xposed:api:82` (Apache-2.0), a compile-only API from https://github.com/rovo89/XposedBridge. Version 0.5.0 removes this dependency and its repository. It is not part of the current app.
 
 ## JSON-java and JUnit
 

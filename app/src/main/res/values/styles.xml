@@ -9,5 +9,4 @@
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowBackground">#F5F6F2</item>
     </style>
-    <string-array name="xposed_scope"><item>com.tencent.mm</item></string-array>
 </resources>

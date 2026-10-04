@@ -4,9 +4,11 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
 import dev.tallybook.core.MoneyCoach;
+import dev.tallybook.core.MonthlyReview;
 import org.json.JSONObject;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -99,6 +101,7 @@ public final class MoneyCoachChecks {
             check(loaded.allocations.isEmpty() && loaded.actions.isEmpty() && loaded.successes.isEmpty()
                     && loaded.reviews.isEmpty() && loaded.practices.size() == 1 && loaded.wishes.get(0).title.isEmpty(), "single-item deletion and wish clearing");
             check(demoSnapshot.equals(demoPrefs.getString("state", "")), "updates completions and deletions never touch demo");
+            monthlyChecks(context);
             check(ledger.list(LedgerStore.WECHAT).size() == realTransactions
                     && ledger.list(LedgerStore.DEMO).size() == demoTransactions, "practice does not create or delete ledger transactions");
 
@@ -118,6 +121,51 @@ public final class MoneyCoachChecks {
             }
         }
         return checks;
+    }
+
+    private static void monthlyChecks(Context context) {
+        SharedPreferences realPrefs = context.getSharedPreferences("monthly_review_wechat", Context.MODE_PRIVATE);
+        SharedPreferences demoPrefs = context.getSharedPreferences("monthly_review_demo", Context.MODE_PRIVATE);
+        check(realPrefs.edit().clear().commit() && demoPrefs.edit().clear().commit(), "monthly fixture reset");
+        YearMonth month = YearMonth.of(2037, 2);
+        MonthlyReviewStore real = new MonthlyReviewStore(context, LedgerStore.WECHAT);
+        MonthlyReviewStore demo = new MonthlyReviewStore(context, LedgerStore.DEMO);
+        try {
+            check(real.load().isEmpty() && demo.load().isEmpty(), "monthly empty stores contain no invented entries");
+            boolean unknown = false;
+            try { new MonthlyReviewStore(context, "unknown"); } catch (IllegalArgumentException expected) { unknown = true; }
+            check(unknown, "monthly invalid scope rejected");
+            real.save(new MonthlyReview(month, "虚构核对事实", "学到的做法", "下月一小步"));
+            demo.save(new MonthlyReview(month, "演示空间事实", "", ""));
+            String demoSnapshot = demoPrefs.getString("state", "");
+            MonthlyReview reloaded = new MonthlyReviewStore(context, LedgerStore.WECHAT).load().get(0);
+            check(reloaded.month.equals(month) && reloaded.facts.equals("虚构核对事实")
+                    && reloaded.nextStep.equals("下月一小步"), "monthly new store instance reloads committed record");
+            real.save(new MonthlyReview(month, "更新后的事实", "", ""));
+            real.save(new MonthlyReview(month.plusMonths(1), "另一个月", "", ""));
+            check(real.load().size() == 2 && real.load().get(0).month.equals(month.plusMonths(1))
+                    && real.load().get(1).facts.equals("更新后的事实"), "monthly same month replaces and newest month sorts first");
+            real.delete(month);
+            check(real.load().size() == 1 && demoSnapshot.equals(demoPrefs.getString("state", "")), "monthly single deletion isolated from other months and demo");
+            String corrupt = "{preserve-corrupt-month}";
+            check(realPrefs.edit().putString("state", corrupt).commit(), "inject malformed monthly fixture");
+            check(rejectsMonth(() -> real.load()) && rejectsMonth(() -> real.save(new MonthlyReview(month, "", "", "")))
+                    && rejectsMonth(() -> real.delete(month)) && corrupt.equals(realPrefs.getString("state", "")), "monthly malformed state blocks all writes without resetting");
+            check(realPrefs.edit().putInt("state", 123).commit(), "inject wrong monthly preference type");
+            check(rejectsMonth(() -> real.load()) && rejectsMonth(() -> real.save(new MonthlyReview(month, "", "", "")))
+                    && rejectsMonth(() -> real.delete(month)) && realPrefs.getInt("state", 0) == 123, "monthly wrong preference type blocks writes unchanged");
+            String future = "{\"schemaVersion\":2,\"records\":[]}";
+            check(realPrefs.edit().putString("state", future).commit(), "inject future monthly schema");
+            check(rejectsMonth(() -> real.load()) && rejectsMonth(() -> real.delete(month))
+                    && future.equals(realPrefs.getString("state", "")) && demoSnapshot.equals(demoPrefs.getString("state", "")), "monthly unknown schema preserved and corruption stays isolated");
+        } finally {
+            if (!realPrefs.edit().clear().commit() || !demoPrefs.edit().clear().commit())
+                throw new IllegalStateException("Cannot remove fictional monthly fixtures");
+        }
+    }
+
+    private static boolean rejectsMonth(Runnable action) {
+        try { action.run(); return false; } catch (IllegalStateException expected) { return true; }
     }
 
     private static boolean rejectsLoad(MoneyCoachStore store) {
