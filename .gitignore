@@ -5,6 +5,7 @@ local.properties
 *.iml
 .idea/
 captures/
+artifacts/
 *.keystore
 *.jks
 artifacts/*.apk
@@ -18,3 +19,6 @@ artifacts/*.json
 artifacts/*.txt
 artifacts/*.sha256
 artifacts/history/
+# Personal outputs from the authenticated WeChat query experiment.
+wechat-bills-*.json
+wechat-bills-*.csv

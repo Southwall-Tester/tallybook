@@ -1,6 +1,6 @@
 # 账本与生活费规划核心
 
-这是纯 Java 17 模块，无 Android 依赖。它提供微信单笔详情解析、手动交易、生活费预算和存钱目标计算，不负责访问微信、拉取列表或进行登录验证。微信详情结构参考来自 [AutoAccounting 的 WebViewHooker](https://github.com/AutoAccountingOrg/AutoAccounting/blob/master/app/src/main/java/net/ankio/auto/xposed/hooks/wechat/hooks/WebViewHooker.kt)，实现和测试数据独立编写。没有保存上游注释中的真实账户、交易号或签名。
+这是纯 Java 17 模块，无 Android 依赖。它提供本地单笔文件解析、手动交易、生活费预算、梦想与行动练习、钱罐/项目/资产盘点、月度回顾和离线学习计算，不负责访问微信、拉取列表或进行登录验证。微信详情结构参考来自 [AutoAccounting 的 WebViewHooker](https://github.com/AutoAccountingOrg/AutoAccounting/blob/master/app/src/main/java/net/ankio/auto/xposed/hooks/wechat/hooks/WebViewHooker.kt)，实现和测试数据独立编写。没有保存上游注释中的真实账户、交易号或签名。
 
 ## 调用约定
 
@@ -17,7 +17,7 @@ if (result.isSuccess()) {
 - `amountMinor` 是有符号的人民币分：负数为支出方向，正数为收入方向。不能仅据方向判断是否真实收入或消费，`reviewRequired` 记录必须排除在确认汇总之外。
 - `occurredAt` 是 Unix 毫秒。原始秒/毫秒时间戳须有 `is_timestamp: true`。支持完整的 `yyyy-MM-dd HH:mm:ss` 和 `yyyy年MM月dd日 HH:mm:ss` 文本，明确按 `Asia/Shanghai` 解释，不使用手机当前时区或采集时间。
 - `id` 是确定性的 `wechat:` 加 SHA-256。存在交易单号时仅以 provider 和该单号识别交易，状态更新不会产生新 ID；数据库应更新原记录，防止退款后继续累计原支出。缺少单号时对交易对象、方式、说明、金额、交易时间计算指纹，并强制待核对。此指纹仍可能合并真实的重复消费，不能视为完整去重证据。
-- `Transaction.fromJson(String)` 只读取本模块的规范 JSON，格式不匹配抛出 `IllegalArgumentException`。它验证 `schemaVersion: 1`、`provider: "wechat"` 或 `"manual"`、完整且无多余字段、金额与时间范围、待核对标记、ID 一致性。接收微信采集的调用方还应限定 `provider == Transaction.PROVIDER`。
+- `Transaction.fromJson(String)` 只读取本模块的规范 JSON，格式不匹配抛出 `IllegalArgumentException`。它验证 `schemaVersion: 1`、`provider: "wechat"` 或 `"manual"`、完整且无多余字段、金额与时间范围、待核对标记、ID 一致性；旧 `wechat_query` schema 仍可读取以保留历史记录。
 - 如需要构造记录，公开构造函数参数顺序为 `tradeId, counterparty, status, paymentMethod, description, amountMinor, occurredAt, reviewRequired, reviewReason`，ID 由构造函数生成。
 
 ## 手动记账
@@ -89,6 +89,6 @@ long dailyNeed = goal.dailyNeedMinor(today);
 
 `src/main/resources/demo-wechat*.json` 是四笔明确标注为全虚构的演示记录：早餐支出、书店支出、闲置物品售出收入、退款待核对。`src/test/resources` 中的独立夹具也全部为虚构数据。
 
-运行 `gradlew.bat :core:test`。当前 50 项 JUnit 测试覆盖桥接转义、不同输入形式、身份去重、状态更新、精确金额、收入支出、退款/失败/待核对、无单号指纹、日期与时间歧义、未知结构、异常/超大/深嵌套 JSON，以及规范记录边界校验；还覆盖手动交易往返读取与旧微信 ID 兼容、预算负数/零/周期外/时区/溢出，以及目标闰日、逾期、舍入与超额完成。
+运行 `gradlew.bat :core:test`。测试覆盖解析严格性、旧 ID 与 JSON 兼容、整数金额守恒、预算与目标、真实日期边界、钱罐不可重复分配/核销及负余额保护、项目预期与实收隔离、JSON 损坏保护、月度复盘和假设学习计算。当前数量和实际结果见 [验证记录](../docs/VALIDATION.md)。
 
-测试只验证本地解析与数据边界；尚不能证明当前微信版本会走该回传路径、真实手机能采集成功，或能补齐历史账单。
+`MoneyFinance` 只建模用途和事实，项目实际流水与账本的原子写入由 Android 的 `MoneyFinanceStore` 负责。`LearningMath` 的追加、通胀、分散风险和消费债务演算不生成交易。当前模块不访问微信、银行或市场行情。

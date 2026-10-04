@@ -1,77 +1,101 @@
 # 原型验证记录
 
-验证日期：2026-10-03。对象：`0.2.0-prototype`，包名 `dev.tallybook.app`。
+## 0.5.0 钱钱计划 · 2026-10-04
 
-## 交付物
+本版以《小狗钱钱》两册的日常实践为开发重点。撤下微信直接查询、USB 助手、Hook 与接收 Provider；旧版本保存在 `wechat-query-v0.4.0`，OCR 保存版为 `screen-ocr-v0.3.0`。历史本机交易 schema 继续可读。
 
-- 本地 APK：`artifacts/tallybook-0.2.0-debug.apk`，129,865 字节，调试签名；生成文件不纳入 Git。
-- SHA-256：`2af057ab5fb5b770aa386a39b1ec777a790e6df2bf491050a20f4beb3f119280`。
-- Android 8.0（API 26）起可安装；编译和目标 SDK 为 35。完整运行验证使用 Android 15 / API 35 模拟器；另在 vivo S30、Android 16 / API 36 上完成首次安装和启动检查，尚未覆盖所有安卓版本或厂商系统。
-- `apksigner verify --verbose` 成功：APK v2 签名有效。
+### 交付物
 
-## 已完成的检查
+- 本地 APK：`artifacts/tallybook-0.5.0-debug.apk`，189,278 字节，versionCode 6。
+- SHA-256：`620d9006d3dba7bdc3349630c7fd8b1004e34cfd0f77206b2a829a84e4b5db2f`；APK v2 签名校验通过。
+- 包名沿用 `dev.tallybook.app`，支持 API 26 起，compile/target 35。旧 APK 保留。
+- 当前 manifest 没有权限申请、Provider 或 Service；内部练习 Activity 不对其他应用导出。
+
+### 已运行的工程检查
 
 | 检查 | 结果与范围 |
 | --- | --- |
-| Gradle 构建 | `:core:test :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug` 成功 |
-| JVM 核心测试 | 50 项全部通过；28 项微信解析、6 项手动交易、9 项预算、7 项目标测试，覆盖金额/日期边界、稳定 ID、状态、时区与溢出 |
-| Android 集成测试 | 26 项全部通过；覆盖平台 JSON、数据库去重、手动记录删除限制、采集校验、预算/目标持久化与真实/演示隔离 |
-| 外部调用检查 | 模拟器 shell UID 调用采集 Provider 被拒绝；Provider 不提供账本查询 |
-| 界面与 CSV | 完整操作预算、手动支出、消费试算、目标保存、重启恢复、手动删除、采集开关；通过系统文件选择器导出真实/演示 CSV 并回读核对 |
-| 静态检查 | 0 个错误、5 个警告；其中 1 个为导出的 Provider，4 个为中文界面文案的国际化提示 |
+| 完整构建 | `scripts/build.ps1` 通过：核心测试、应用 APK、Android 测试 APK、lint |
+| JVM | 99 项通过，0 失败/错误/跳过；含 11 项资金模型、10 项新增学习计算和 4 项月度模型测试 |
+| Android 集成 | 指定 `tallybook_api35` 的 102 项检查通过；含资金事务回滚、真实/演示隔离、v1→v2 迁移保留、重复/未来日期/负余额保护、月度记录损坏拒写、旧查询组件缺失 |
+| Lint | 0 错误、4 项字符串本地化提示；图片读取流由调用处 try-with-resources 关闭 |
+| 基础 UI | 手动记账、生活费、消费试算不入账、旧目标、重启、删除、双账本隔离、CSV 系统选择器导出回读、新五页导航全部通过 |
+| 书中练习 UI | book-ui-smoke.py 的 14 组流程通过：愿望/取消选图、旋转日记、历史演算、行动、准则、周/月回顾与行动草稿、三类学习实验、来源隔离及重启 |
+| 资金 UI | finance-ui-smoke.py 的 8 组流程通过：旋转保留项目草稿、预期不入账、实收与成本同步账本、按分分配与去重、余额不足保留输入、期初/调拨/核销不重复入账、资产债务增改删、来源隔离与重启恢复 |
+| 图片与旧目标 UI | book-image-ui-smoke.py 的 5 组检查通过：系统选择合成 128×96 PNG、显示缩略图、保存 URI 后强制停止重启仍可预览、原目标复制到第一个完全空的愿望位置、其他愿望及两账本/钱罐/复盘保持不变；未验证大图采样与外部原图查看器 |
+| GitHub CI | 本地检查不代替 CI；本版推送与 PR 的运行结果见 [功能分支 Actions](https://github.com/Southwall-Tester/tallybook/actions?query=branch%3Afeature%2Fmoney-coach)，具体运行链接另记在 PR 中 |
+| 用户手机 | 当前 ADB 未发现实验手机，尚未安装 0.5.0；没有操作副屏平板 |
 
-Provider 为微信进程写入本地记录而导出；代码逐次核验 Binder 调用方 UID，只允许本应用或安装的微信包，采集关闭时拒绝交易写入。当前检查验证了外部 shell 被拒绝和应用内流程，**未验证真实微信进程与模块环境之间的通信**。
+### 实现与验证边界
 
-界面样例：期初 2,000 元、固定预留 300 元、储蓄预留 200 元，可用 1,500 元；手动记支出 25.50 元后，可用 1,474.50 元，30 天每日参考 49.15 元。试算消费 100 元显示 1,374.50 元，不写入账本。目标 1,000 元、已存 250 元显示 25%，重启后保持。
+已实现五页主导航，钱罐分配/期初/转移/核销/撤销，赚钱项目及实际收支，手动资产债务盘点，月度回顾、复盘转行动草稿、旧目标复制、梦想图片预览及三种离线学习实验。实际流水与项目状态在同一 SQLite 事务保存；已有账本记录被钱罐关联后，不能从普通删除入口破坏关联。
 
-CSV 样例全部为虚构数据。手动记录导出金额为 -25.50 元；演示确认支出 60.80 元、确认收入 120.00 元。退款样例标记待核对，不计入确认收支。演示回读文件在本地 `artifacts/demo-export.csv`。
+金额采用整数分。预期项目收入、学习模拟收益、手记梦想进度、资产快照不会作为收入入账。钱罐表示用途，生活费表示本期可用估算，二者不自动相加。未来实际日期被拒绝，预期约定与债务到期日可为未来。
 
-完整界面流程在本次功能构建上通过。随后补充保存/删除/清空后的页面刷新通知，并修复旋转后恢复已保存草稿的问题。最终 APK 重新构建，通过 26 项集成检查及 `ui-refresh-smoke.py` 的保存→旋转→确认只有一笔→删除定向回归。未对所有写入与旋转并发时序进行穷尽验证。
+43 个方法入口并不等于所有方法都有完整专用子系统。当前未实现完整贷款还款计划、投资下单、多人资金池、目标归档、云同步或所有数据类型的备份恢复。当前 CSV 导出范围仍是收支账本，图片只保留用户授予的文件读取关联。模拟器检查不证明用户的财务、学习或习惯效果。
 
-电脑预览：`scripts/preview.ps1` 已实际创建并启动可见的 `tallybook_preview:5556` 窗口、安装 APK 并打开 Activity。测试设备为另一个 AVD，预览数据不会被测试清空。
+以下为旧版验证归档，仅描述当时版本，不能作为当前功能入口或当前测试结果。
 
-USB 开发入口：`scripts/run-device.ps1` 通过 Windows PowerShell 5.1 语法解析；实际检查了设备列表，以及未选择设备、目标不存在、选择模拟器时在构建和安装前拒绝运行的分支。构建与 lint 再次成功，应用源码未变，APK SHA-256 保持不变。设备序列号仅本地保存，不进入 Git。
+## 0.4.0 验证归档
 
-真机首次部署：在 vivo S30（V2464A）、Android 16 / API 36 上确认型号并固定目标，执行 `-Check -Remember` 后运行真机脚本。增量构建成功，安装返回 `Success`，启动返回 `Status: ok`；本应用包信息为 `versionCode=2`、`versionName=0.2.0-prototype`，随后确认应用进程仍在运行、前台 Activity 为 `dev.tallybook.app/.MainActivity`。用户确认已进入应用。未操作副屏平板，也未在真机上运行清空账本的测试。覆盖更新、`-Watch` 连续运行、真机账本读写及微信采集仍未实测。
+验证日期：2026-10-03。当前开发版本：`0.4.0-prototype`，包名 `dev.tallybook.app`。
 
-证据文件（`artifacts/` 与 `build/` 为本地产物，未上传 Git；CI 报告从对应 Actions 运行下载）：
+## 当前交付物
 
-- Android 集成检查：`artifacts/instrumentation.txt`
-- 外部调用拒绝记录：`artifacts/provider-access-check.txt`
-- 界面检查结果：`artifacts/ui-smoke.json`
-- 最终构建旋转定向检查：`artifacts/refresh-check.json`
-- 虚构数据截图：[生活费首页](screenshots/budget-home.png)、[目标页](screenshots/savings-goal.png)
-- 详细 JVM 报告：`core/build/reports/tests/test/index.html`
-- 详细 Lint 报告：`app/build/reports/lint-results-debug.html`
+- APK：`artifacts/tallybook-0.4.0-debug.apk`，256,341 字节，versionCode 5。
+- SHA-256：`c0c3ec79933383acfa71b60012cb1982bbf66d18e41f99ed0dffc069372ef6ba`。
+- APK 签名验证通过；Android 8.0 / API 26 起可安装，compile/target SDK 35；最终 APK 权限清单为空。
+- 新增钱钱练习、私有 USB 查询请求与待核对入账。历史 APK 均保留，未恢复屏幕读取。
+- vivo S30 首次覆盖安装被系统取消；用户要求重新发起后，`adb install -r` 返回 `Success`。随后冷启动返回 `Status: ok`，实机包信息确认为 versionCode 5 / `0.4.0-prototype`。未卸载或清空手机数据。该结果证明安装与启动成功，不代表新增微信查询到入库的真机闭环已通过。
 
-## 尚未验证或实现
+## 已完成检查
 
-- 真机已完成首次安装和启动；尚未在真机验证完整账本功能，没有登录微信、读取真实账单或进行真实支付。
-- Hook 基于开源项目公开的 `evaluateJavascript` 切入点和**单笔账单详情**格式。模拟器测试使用虚构输入，不能证明当前微信版本兼容。
-- 采集需要可运行 Xposed 模块的环境。普通未 Root 手机只安装 APK，可体验账本、导入支持的 JSON 和导出 CSV，不能因此获得读取微信进程的能力。
-- 尚无独立微信后台查询 API、完整账单列表分页、每日定时拉取、支付宝或银行采集。
-- JSON 导入仅支持已适配的单笔详情或本应用规范交易格式，不是官方账单 CSV/XLSX 导入。
-- 未测试真实手机的后台保活、厂商权限限制、多微信账号、跨平台去重或完整退款核销。
+| 检查 | 结果及范围 |
+| --- | --- |
+| Gradle | `scripts/build.ps1`：核心测试、应用 APK、测试 APK 与 lint 成功 |
+| JVM | 84 项通过，0 失败/错误/跳过；新增 24 项钱钱模型与 JSON 测试、10 项查询解析测试 |
+| 钱钱计算 | 5,151 种整数百分比分配组合及边界金额守恒；精确 72 小时、跨夏令时/闰日、主题循环、正负假设复利；长期 JSON 历史与严格损坏检查 |
+| Android 集成 | `tallybook_api35` 模拟器 74 项通过；其中 29 项钱钱持久化/隔离/更新删除/损坏保护、19 项私有查询协议及确认/去重检查 |
+| 旧功能 UI | 生活费、手动收支、消费试算不入账、存钱目标、重启恢复、手动删除、真实/演示隔离、系统文件选择器 CSV 导出回读与旧 Hook 开关均通过 |
+| Lint | 0 错误、10 警告；涉及现有受调用方限制的导出 Provider、同步持久化提示及中文字符串本地化提示 |
+| 查询工具离线 | 23 项 Python/Node 虚构测试通过；含分页、复合去重、凭据边界、CSV、私有 stdin 投递、取消/换请求/过期后继续监听 |
+| 钱钱定向 UI | `scripts/book-ui-smoke.py` 的 9 组检查全部通过：愿望/重点/选图取消保留输入、旋转日记草稿、分配计划转已执行、记录行动结果并完成、星期准则、每周回顾与越界日期恢复、正负年率试算、来源隔离、重启恢复 |
+| GitHub CI | 开发检查点 `961280d` 的 [push 检查](https://github.com/Southwall-Tester/tallybook/actions/runs/37115780895) 和 [PR 检查](https://github.com/Southwall-Tester/tallybook/actions/runs/37115783129) 均成功；OCR 保存标签的构建亦成功 |
+
+Android 自动测试仅使用指定的可丢弃模拟器，未在手机或副屏平板运行重置数据的测试。个人账单、凭据、原书全文和隐私截图不进入 Git。
+
+## 钱钱功能与验证边界
+
+已实现九个页面：今天、愿望与梦想、三用途分配、成功日记、72 小时行动、每日准则、每周复盘、方法库、学习试算。六类记录单独按真实/演示来源持久化；保存操作后台串行执行，失败保留原记录和输入。模拟器存储检查与定向点按流程已通过。三张虚构数据截图已查看，表单、方法库和负年率结果正常显示，长页面可滚动。
+
+梦想图片使用系统文件选择器取得只读 URI，不请求整个相册权限。真实图片选择、持久授权及重启打开尚未完成验证。分配记录与手填梦想进度不改动真实账本；复利和 72 法则均为用户输入假设的教学试算，不记作收入。
+
+43 个方法入口是简短转述与操作导向，不代表 43 个专用子系统全部完成。完整资产/债务管理、收入项目、账户用途余额、投资组合模拟和所有方法的专用流程仍是设计范围，见 [产品设计](BOOK_PRODUCT_PLAN.md)。工程检查不证明用户的储蓄、学习或行为效果。
+
+## 微信接口验证边界
+
+此前已在 vivo S30 / Android 16 / 微信 8.0.77 的当前登录账单页，用固定只读原生查询及分页取得两页各 20 条、共 40 条唯一记录，并导出本地 JSON/CSV。未触发官方导出、人脸验证或账务修改；导出不包含请求鉴权字段，工具创建的转发已移除。详细结构和边界见 [接口研究](WECHAT_API_RESEARCH.md)。
+
+0.4.0 的手机请求、私有结果验证、批量入库、逐笔确认及去重已通过模拟器与虚构协议检查，**微信实际查询 → 电脑回传 → 手机新版本入库尚未完成真机验证**。以前的 40 条电脑导出不能算作本次手机入账成功。
+
+带当前页面参数的独立 Python HTTPS GET（无 Cookie）此前返回 HTTP 200、业务码 268511753、0 记录。目前成立的是微信登录页面环境内的查询。尚未建立独立后台调用、会话续期、每日任务或完整历史账单同步。当前亦不支持微信官方 CSV/XLSX 导入、支付宝/银行采集、自动跨来源对账或完整退款核销。旧 Hook 仍需兼容 Xposed 环境，尚无真机采集成功证据。
+
+## 屏幕读取历史检查点
+
+按用户要求，先提交并推送完整屏幕版本，再用后续提交移除：
+
+- 保存版 [a02b758](https://github.com/Southwall-Tester/tallybook/commit/a02b758)，另有已推送标签 [screen-ocr-v0.3.0](https://github.com/Southwall-Tester/tallybook/tree/screen-ocr-v0.3.0)。
+- 删除版 [4df9827](https://github.com/Southwall-Tester/tallybook/commit/4df9827)，没有改写保存版历史。
+
+历史 0.3.0 有 88 项 JVM、40 项 Android 检查通过；本地真实截图样本识别 5 条、跳过 3 行。该版本未完成修复后手机服务到入库的实测，不宣称真机屏幕采集成功。0.3.1 删除版已在手机成功安装启动。
 
 ## 复现
 
-工具链保存在本项目 `.tools`：JDK 21、Gradle 8.11.1、Android SDK 35。脚本只设置当前进程环境，不改全局 PATH。首次下载需要网络。
-
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\start-emulator.ps1 -Install
-```
-
-模拟器以隐藏窗口方式运行。等待启动完成后：
-
-```powershell
-. .\.tools\env.ps1
-adb -s emulator-5554 shell getprop sys.boot_completed
-# 上一条输出为 1 后执行；需已安装 Python 3。
 powershell -ExecutionPolicy Bypass -File .\scripts\test-emulator.ps1
+python -X utf8 scripts/book-ui-smoke.py
+python -X utf8 scripts/test_query_wechat_bills.py
 ```
 
-测试脚本仅允许本项目的 `tallybook_api35` 模拟器，并重置其中小账本的测试数据；不要改成真机运行。真实微信兼容性验证步骤见 [README](../README.md)。
-
-版本历史：0.1.0 验证了 28 项核心测试及 16 项安卓集成检查，原始验证文档保存在 Git 历史，本地旧 APK 仍保留。
+UI 脚本串行运行。测试工具只允许 `tallybook_api35`；集成测试会重置其测试数据，不影响预览 AVD 或手机。`artifacts/` 测试报告、JVM XML、lint、APK 与个人导出均是被 Git 忽略的本地产物。CI 结果以具体提交的 GitHub Actions 为准，本文数字首先是本地检查结果。
